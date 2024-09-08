@@ -1,4 +1,5 @@
-# YouTube Screenshot Extractor - Dataset prep helper for loras/checkpoints/etc.!
+# YouTube Screenshot Extractor:
+## Dataset prep helper for loras/checkpoints/etc.!
 
 This script downloads a YouTube video and extracts highest-available-quality frames at specified intervals, removing black bars from the screenshots.
 
