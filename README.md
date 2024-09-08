@@ -41,7 +41,7 @@ python youtube_screenshot_script.py [YouTube URL] [options]
 ### Options
 
 - `--interval INTERVAL`: Interval between frames in seconds (default: 5.0)
-- `--quality QUALITY`: Quality threshold for frame selection (default: 10.0)
+- `--quality QUALITY`: Quality threshold 1-100 for frame selection (default: 12.0) - Note Youtube videos tend to score somewhat low.
 - `--output OUTPUT`: Custom output folder name
 
 ### Example
