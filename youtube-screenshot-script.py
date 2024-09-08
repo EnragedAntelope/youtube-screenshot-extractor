@@ -24,10 +24,23 @@ def download_video(url, output_path):
 
 def calculate_quality_score(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+    
+    # Sharpness
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    sharpness = np.var(laplacian)
+    sharpness_norm = min(sharpness / 1000, 1.0)
+    
+    # Contrast
     contrast = np.std(gray)
+    contrast_norm = contrast / 128
+    
+    # Brightness
     brightness = np.mean(gray)
-    quality_score = sharpness * 0.5 + contrast * 0.3 + brightness * 0.2
+    brightness_norm = brightness / 255
+    
+    # Calculate weighted score
+    quality_score = (sharpness_norm * 0.5 + contrast_norm * 0.3 + brightness_norm * 0.2) * 100
+    
     return quality_score
 
 def is_black(pixel, threshold=10):
@@ -37,25 +50,30 @@ def remove_black_bars(image):
     width, height = image.size
     pixels = image.load()
 
+    # Find top
     top = 0
     while top < height and all(is_black(pixels[x, top]) for x in range(width)):
         top += 1
 
+    # Find bottom
     bottom = height - 1
     while bottom > top and all(is_black(pixels[x, bottom]) for x in range(width)):
         bottom -= 1
 
+    # Find left
     left = 0
     while left < width and all(is_black(pixels[left, y]) for y in range(top, bottom + 1)):
         left += 1
 
+    # Find right
     right = width - 1
     while right > left and all(is_black(pixels[right, y]) for y in range(top, bottom + 1)):
         right -= 1
 
+    # Crop the image
     return image.crop((left, top, right + 1, bottom + 1))
 
-def extract_frames(video_path, output_folder, interval_seconds=5, quality_threshold=10):
+def extract_frames(video_path, output_folder, interval_seconds=5, quality_threshold=50):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     
@@ -72,8 +90,11 @@ def extract_frames(video_path, output_folder, interval_seconds=5, quality_thresh
             print(f"Frame {frame_number}: Quality Score = {quality_score:.2f}")
             
             if quality_score > quality_threshold:
+                # Convert BGR to RGB
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 pil_image = Image.fromarray(rgb_frame)
+                
+                # Remove black bars
                 pil_image = remove_black_bars(pil_image)
                 
                 frame_filename = os.path.join(output_folder, f"frame_{count:06d}.jpg")
@@ -104,8 +125,8 @@ def main():
     parser.add_argument(
         "--quality", 
         type=float, 
-        default=10.0, 
-        help="Quality threshold for frame selection. Higher values are more strict."
+        default=50.0, 
+        help="Quality threshold for frame selection (0-100). Higher values are more strict."
     )
     parser.add_argument(
         "--output", 
@@ -115,6 +136,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.quality < 0 or args.quality > 100:
+        parser.error("Quality threshold must be between 0 and 100.")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     video_path = f"downloaded_video_{timestamp}.mp4"
@@ -129,6 +153,7 @@ def main():
     
     print(f"Video downloaded: {video_path}")
     print(f"Extracting frames to: {output_folder}")
+    print(f"Quality threshold set to {args.quality:.1f} (Range: 0-100, Higher is stricter)")
     
     extract_frames(video_path, output_folder, args.interval, args.quality)
     print("Frame extraction complete.")
