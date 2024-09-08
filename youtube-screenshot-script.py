@@ -125,8 +125,8 @@ def main():
     parser.add_argument(
         "--quality", 
         type=float, 
-        default=50.0, 
-        help="Quality threshold for frame selection (0-100). Higher values are more strict."
+        default=12.0, 
+        help="Quality threshold for frame selection (0-100). Higher values are more strict. 0 accepts all frames, 100 is very strict."
     )
     parser.add_argument(
         "--output", 
