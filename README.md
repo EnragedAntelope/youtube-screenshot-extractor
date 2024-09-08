@@ -1,14 +1,15 @@
-# YouTube Screenshot Extractor
+# YouTube Screenshot Extractor - Dataset prep helper for loras/checkpoints/etc.!
 
-This script downloads a YouTube video and extracts high-quality frames at specified intervals, removing black bars from the screenshots.
+This script downloads a YouTube video and extracts highest-available-quality frames at specified intervals, removing black bars from the screenshots.
 
 ## Features
 
 - Download YouTube videos using yt-dlp
 - Extract frames at specified intervals
-- Calculate quality scores for each frame
+- Calculate quality scores for each frame - skip any frames below a set quality threshold
 - Remove black bars from extracted frames
-- Save high-quality frames as JPEG images
+- Save high-quality frames as JPEG images in unique folder structures indicating source video
+- Script can be run with --help to see all available usage/options
 
 ## Requirements
 
