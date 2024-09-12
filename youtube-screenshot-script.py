@@ -90,7 +90,7 @@ def remove_black_bars(image):
     # Crop the image
     return image.crop((left, top, right + 1, bottom + 1))
 
-def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=50, blur_threshold=100):
+def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=30, blur_threshold=100):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     
@@ -158,7 +158,7 @@ def process_frame(frame, output_folder, count, quality_threshold, blur_threshold
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
     
-    if quality_score > quality_threshold and laplacian_var > blur_threshold:
+    if quality_score >= quality_threshold and laplacian_var >= blur_threshold:
         # Convert BGR to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)
@@ -197,7 +197,7 @@ def main():
     parser.add_argument(
         "--quality", 
         type=float, 
-        default=50.0,
+        default=30.0,
         help="Quality threshold for frame selection (0-100). Higher values are more strict. 0 accepts all frames, 100 is very strict."
     )
     parser.add_argument(
