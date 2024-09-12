@@ -67,8 +67,8 @@ python youtube-screenshot-script.py --help
   - `keyframes`: Extract only keyframes
   - `scene`: Use scene detection to extract frames
 - `--interval INTERVAL`: Interval between frames in seconds (default: 5.0, only used with 'interval' method)
-- `--quality QUALITY`: Quality threshold for frame selection (0-100, default: 50.0)
-- `--blur BLUR`: Blur threshold for frame selection (default: 100.0)
+- `--quality QUALITY`: Quality threshold for frame selection (0-100, default: 30.0). Frames with quality scores above this threshold will be kept.
+- `--blur BLUR`: Blur threshold for frame selection (default: 100.0). Frames with blur scores above this threshold will be kept.
 - `--output OUTPUT`: Custom output folder name
 
 ### Examples
@@ -78,17 +78,22 @@ python youtube-screenshot-script.py --help
    python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
    ```
 
-2. Extract frames every 10 seconds with a lower quality threshold:
+2. Extract frames every 10 seconds with a higher quality threshold:
    ```
-   python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --interval 10 --quality 30
+   python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --interval 10 --quality 40
    ```
 
-3. Extract keyframes from a local video file:
+3. Extract frames with a lower quality threshold for low-quality videos:
+   ```
+   python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --quality 12
+   ```
+
+4. Extract keyframes from a local video file:
    ```
    python youtube-screenshot-script.py path/to/your/video.mp4 --method keyframes
    ```
 
-4. Use scene detection on a YouTube video:
+5. Use scene detection on a YouTube video:
    ```
    python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --method scene
    ```
@@ -101,8 +106,9 @@ python youtube-screenshot-script.py --help
   - Scene detection is the most time-consuming method but can provide excellent results for videos with distinct scene changes.
 
 - **Quality Threshold**: 
-  - The default quality threshold (50.0) may be too high for some YouTube videos. 
-  - For lower quality videos, try reducing the quality threshold (e.g., --quality 30 or lower).
+  - The default quality threshold (30.0) is set to work well with most YouTube videos.
+  - For lower quality videos, you may need to reduce the quality threshold further (e.g., --quality 20 or even down to the 10-12 range).
+  - Frames with quality scores above the set threshold will be kept.
   - Experiment with different values to find the best balance between quantity and quality of extracted frames.
 
 - **Output**: 
@@ -119,16 +125,18 @@ python youtube-screenshot-script.py --help
 
 ## Tips
 
-- For quick results, start with the 'interval' method and adjust the interval and quality threshold as needed.
-- Use the 'scene' method for videos with distinct scene changes, but be prepared for longer processing times.
-- When working with lower quality YouTube videos, start with a lower quality threshold (e.g., --quality 20) and adjust as needed.
+- Start with the default quality threshold (30.0) and adjust as needed. For high-quality videos, you might increase it slightly, while for lower quality videos, you may need to decrease it significantly.
+- Use the 'interval' method for quick results, and adjust the interval and quality threshold to get the desired number of frames.
+- The 'scene' method is excellent for videos with distinct scene changes but may take longer to process.
+- When working with lower quality YouTube videos, start with a lower quality threshold (e.g., --quality 20 or even 12) and adjust as needed.
 - If you're extracting frames for machine learning datasets, consider using a combination of methods to get a diverse set of high-quality frames.
 
 ## Troubleshooting
 
 - If you encounter issues with keyframe extraction, ensure FFmpeg is properly installed and accessible in your system PATH.
 - For scene detection issues, make sure the scenedetect library is installed (`pip install scenedetect`).
-- If you're not getting any frames, try lowering the quality and blur thresholds.
+- If you're not getting any frames, try lowering the quality threshold. Some videos may require values as low as 10-12.
+- If the script is extracting too many similar frames, try increasing the interval or quality threshold.
 
 ## License
 
