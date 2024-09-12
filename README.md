@@ -37,8 +37,13 @@ This Python script is a powerful tool for extracting high-quality screenshots fr
    pip install -r requirements.txt
    ```
 
-3. Install FFmpeg (if you plan to use keyframe extraction):
+3. Install FFmpeg (required for keyframe extraction):
    - Follow the instructions at: https://ffmpeg.org/download.html
+
+Note: The scenedetect library is now included in the requirements.txt file. If you encounter any issues with scene detection, ensure you have the latest version installed:
+```
+pip install --upgrade scenedetect
+```
 
 ## Usage
 
