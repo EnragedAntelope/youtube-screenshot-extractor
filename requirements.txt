@@ -3,3 +3,5 @@ opencv-python>=4.7.0
 numpy>=1.24.0
 Pillow>=9.5.0
 scenedetect>=0.6.1
+tqdm>=4.65.0
+pycuda>=2022.1
