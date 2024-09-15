@@ -30,6 +30,7 @@ This Python script is a versatile tool for extracting high-quality screenshots f
 - Python 3.6+
 - FFmpeg (required for keyframe extraction)
 - Dependencies listed in `requirements.txt`
+- PyCUDA (optional, only required for GPU acceleration. Minimum version: 2022.1)
 
 ## Installation
 
@@ -47,6 +48,12 @@ This Python script is a versatile tool for extracting high-quality screenshots f
 3. Install FFmpeg (required for keyframe extraction):
    - Follow the instructions at: https://ffmpeg.org/download.html
 
+4. (Optional) Install PyCUDA for GPU acceleration:
+   ```
+   pip install pycuda>=2022.1
+   ```
+   Note: PyCUDA requires CUDA to be installed on your system. For installation instructions, refer to the [PyCUDA documentation](https://documen.tician.de/pycuda/).
+
 ## Usage
 
 Basic syntax:
@@ -55,6 +62,8 @@ python youtube-screenshot-script.py [SOURCE] [OPTIONS]
 ```
 
 Where `[SOURCE]` can be either a YouTube URL or a path to a local video file.
+
+Note: If you plan to use GPU acceleration (--use-gpu option), make sure you have PyCUDA installed.
 
 ### Quick Start Example
 
