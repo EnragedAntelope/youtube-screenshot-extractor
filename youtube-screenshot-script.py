@@ -11,9 +11,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from tqdm import tqdm
-import pycuda.driver as cuda
-import pycuda.autoinit
-from pycuda.compiler import SourceModule
 import time
 
 def check_ffmpeg():
@@ -137,8 +134,15 @@ def process_frame(args):
     frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu = args
     
     if use_gpu:
-        # GPU processing code (unchanged)
-        pass
+        try:
+            import pycuda.driver as cuda
+            import pycuda.autoinit
+            from pycuda.compiler import SourceModule
+            # GPU processing code (unchanged)
+            # ...
+        except ImportError:
+            print("Warning: pycuda is not installed. Falling back to CPU processing.")
+            use_gpu = False
     
     quality_score = calculate_quality_score(frame)
     laplacian_var = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
