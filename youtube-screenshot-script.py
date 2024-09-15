@@ -405,6 +405,17 @@ Usage Examples:
     if args.method == 'keyframes':
         check_ffmpeg()
 
+    if args.use_gpu:
+        try:
+            import pycuda.driver as cuda
+            import pycuda.autoinit
+        except ImportError:
+            print("Error: PyCUDA is not installed. GPU acceleration is not available.")
+            print("To use GPU acceleration, please install PyCUDA:")
+            print("pip install pycuda>=2022.1")
+            print("Falling back to CPU processing.")
+            args.use_gpu = False
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     if args.source.startswith(('http://', 'https://', 'www.')):
