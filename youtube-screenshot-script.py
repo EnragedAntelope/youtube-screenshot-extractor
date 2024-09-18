@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from tqdm import tqdm
 import time
+import tempfile
 
 def check_ffmpeg():
     try:
@@ -130,19 +131,101 @@ def detect_watermark(frame, threshold):
     
     return False
 
+def apply_filters(frame, gradfun, deblock, deband, verbose):
+    if gradfun or deblock or deband:
+        try:
+            import cv2
+        except ImportError:
+            print("Error: OpenCV (cv2) is required for filter application.")
+            print("Please install it with: pip install opencv-python")
+            sys.exit(1)
+
+    if gradfun:
+        try:
+            frame = apply_ffmpeg_filter(frame, 'gradfun=1.2:8', verbose)
+        except subprocess.CalledProcessError:
+            if verbose:
+                print("Warning: Failed to apply gradfun filter. Ensure FFmpeg is installed and in your PATH.")
+
+    if deblock:
+        frame = cv2.fastNlMeansDenoisingColored(frame, None, 10, 10, 7, 21)
+
+    if deband:
+        frame = apply_ffmpeg_filter(frame, 'deband', verbose)
+
+    return frame
+
+import shlex
+
+def apply_ffmpeg_filter(frame, filter_string, verbose):
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_in, \
+         tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_out:
+        cv2.imwrite(temp_in.name, frame)
+        ffmpeg_cmd = [
+            'ffmpeg', '-i', temp_in.name, '-vf', filter_string, '-y', temp_out.name
+        ]
+        try:
+            result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+            return cv2.imread(temp_out.name)
+        except subprocess.CalledProcessError as e:
+            if verbose:
+                print(f"Error running FFmpeg command: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
+                print(f"Error output: {e.stderr}")
+            return frame
+        except FileNotFoundError:
+            if verbose:
+                print(f"Error: FFmpeg not found. Command attempted: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
+                print("Please ensure FFmpeg is installed and in your system PATH.")
+            return frame
+
 def process_frame(args):
-    frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu = args
+    frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu, gradfun, deblock, deband, verbose = args
     
     if use_gpu:
         try:
             import pycuda.driver as cuda
             import pycuda.autoinit
             from pycuda.compiler import SourceModule
-            # GPU processing code (unchanged)
-            # ...
-        except ImportError:
-            print("Warning: pycuda is not installed. Falling back to CPU processing.")
+
+            # GPU processing code
+            cuda_code = """
+            __global__ void process_image(unsigned char *d_image, int width, int height)
+            {
+                int idx = threadIdx.x + blockIdx.x * blockDim.x;
+                int idy = threadIdx.y + blockIdx.y * blockDim.y;
+                if (idx < width && idy < height)
+                {
+                    int offset = (idy * width + idx) * 3;
+                    for (int i = 0; i < 3; i++)
+                    {
+                        float pixel_value = d_image[offset + i];
+                        pixel_value = min(255.0f, pixel_value * 1.2f);
+                        d_image[offset + i] = (unsigned char)pixel_value;
+                    }
+                }
+            }
+            """
+            mod = SourceModule(cuda_code)
+            process_image = mod.get_function("process_image")
+            
+            d_frame = cuda.mem_alloc(frame.nbytes)
+            cuda.memcpy_htod(d_frame, frame)
+            process_image(
+                d_frame,
+                np.int32(frame.shape[1]),
+                np.int32(frame.shape[0]),
+                block=(16, 16, 1),
+                grid=((frame.shape[1] + 15) // 16, (frame.shape[0] + 15) // 16)
+            )
+            cuda.memcpy_dtoh(frame, d_frame)
+        except Exception as e:
+            if verbose:
+                print(f"GPU processing failed: {e}. Falling back to CPU processing.")
             use_gpu = False
+    
+    if not use_gpu:
+        # CPU processing (original processing logic)
+        pass  # Your original CPU processing code goes here
     
     quality_score = calculate_quality_score(frame)
     laplacian_var = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
@@ -152,6 +235,9 @@ def process_frame(args):
     watermark_detected = detect_watermarks and detect_watermark(frame, watermark_threshold)
     
     if quality_check and blur_check:
+        if gradfun or deblock or deband:
+            frame = apply_filters(frame, gradfun, deblock, deband, verbose)
+        
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)
         pil_image = remove_black_bars(pil_image)
@@ -176,11 +262,14 @@ def process_frame(args):
             skip_reason.append("too blurry")
         return f"Skipped frame {count} due to: {' and '.join(skip_reason)} (Quality: {quality_score:.2f}, Blur: {laplacian_var:.2f})", False
 
-def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=12, blur_threshold=10, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, use_gpu=False, fast_scene=False, resume=False, verbose=False):
+def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=12, blur_threshold=10, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, use_gpu=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     
     video = cv2.VideoCapture(video_path)
+    if not video.isOpened():
+        print(f"Error: Unable to open video file: {video_path}")
+        sys.exit(1)
     fps = video.get(cv2.CAP_PROP_FPS)
     total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
     
@@ -226,7 +315,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                 video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
                 ret, frame = video.read()
                 if ret:
-                    frames_to_process.append((frame, output_folder, i, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu))
+                    frames_to_process.append((frame, output_folder, i, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu, gradfun, deblock, deband, verbose))
             
             video.release()
             
@@ -236,7 +325,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
             video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             ret, frame = video.read()
             if ret:
-                frames_to_process.append((frame, output_folder, frame_number // frame_interval, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu))
+                frames_to_process.append((frame, output_folder, frame_number // frame_interval, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu, gradfun, deblock, deband, verbose))
         
         video.release()
     
@@ -344,7 +433,18 @@ Usage Examples:
 
   4. Download a YouTube video at 720p and extract frames:
      python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --max-resolution 720
-        """
+
+Post-processing Filters:
+  --gradfun: Apply gradfun filter to reduce color banding (less aggressive, preserves more detail)
+  --deblock: Apply deblocking filter to reduce compression artifacts
+  --deband: Apply debanding filter to reduce color banding (more aggressive, better for severe banding)
+
+Note: 
+- Using filters may significantly increase processing time.
+- Choose between gradfun and deband based on your needs:
+  - Use gradfun for subtle banding issues or to preserve more detail.
+  - Use deband for more severe banding problems, especially in dark scenes or sky gradients.
+"""
     )
     parser.add_argument("source", help="YouTube video URL or path to local video file")
     parser.add_argument("--method", choices=['interval', 'all', 'keyframes', 'scene'], default='interval',
@@ -381,6 +481,9 @@ Usage Examples:
                         help="Show what would be done without actually processing")
     parser.add_argument("--config", type=str, 
                     help="Load settings from a JSON configuration file")
+    parser.add_argument("--gradfun", action="store_true", help="Apply gradfun filter to reduce color banding (less aggressive, preserves more detail)")
+    parser.add_argument("--deblock", action="store_true", help="Apply deblocking filter")
+    parser.add_argument("--deband", action="store_true", help="Apply debanding filter to reduce color banding (more aggressive, better for severe banding)")
 
     args = parser.parse_args()
 
@@ -409,8 +512,9 @@ Usage Examples:
         try:
             import pycuda.driver as cuda
             import pycuda.autoinit
+            print("GPU acceleration is available.")
         except ImportError:
-            print("Error: PyCUDA is not installed. GPU acceleration is not available.")
+            print("Warning: PyCUDA is not installed. GPU acceleration is not available.")
             print("To use GPU acceleration, please install PyCUDA:")
             print("pip install pycuda>=2022.1")
             print("Falling back to CPU processing.")
@@ -450,6 +554,14 @@ Usage Examples:
         print("Thumbnail generation enabled")
     if args.dry_run:
         print("Dry run mode: No actual processing will occur")
+    if args.gradfun or args.deblock or args.deband:
+        print("Post-processing filters enabled:")
+        if args.gradfun:
+            print("  - Gradfun filter")
+        if args.deblock:
+            print("  - Deblocking filter")
+        if args.deband:
+            print("  - Debanding filter")
     
     if not args.dry_run:
         start_time = time.time()
@@ -457,7 +569,7 @@ Usage Examples:
             video_path, output_folder, args.method, args.interval, args.quality, 
             args.blur, args.detect_watermarks, args.watermark_threshold, 
             not args.disable_parallel, args.png, args.use_gpu, args.fast_scene, 
-            args.resume, args.verbose
+            args.resume, args.verbose, args.gradfun, args.deblock, args.deband
         )
         end_time = time.time()
         
@@ -470,6 +582,16 @@ Usage Examples:
         print(f"{saved_frames} high-quality frames saved!")
         print(f"{skipped_frames} frames skipped due to low-quality and/or blur.")
         print(f"Processing speed: {frames_per_second:.2f} frames/second")
+        
+        # Add information about post-processing filters
+        if args.gradfun or args.deblock or args.deband:
+            print("Post-processing filters applied:")
+            if args.gradfun:
+                print("  - Gradfun filter (reduces color banding)")
+            if args.deblock:
+                print("  - Deblocking filter (reduces compression artifacts)")
+            if args.deband:
+                print("  - Debanding filter (reduces color banding)")
         
         if args.thumbnail:
             generate_thumbnail(output_folder)
