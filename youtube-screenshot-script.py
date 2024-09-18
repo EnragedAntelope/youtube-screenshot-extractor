@@ -17,11 +17,9 @@ import tempfile
 def check_ffmpeg():
     try:
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
     except FileNotFoundError:
-        print("Error: FFmpeg is not installed or not in the system PATH.")
-        print("Please install FFmpeg to use the keyframe extraction feature.")
-        print("Installation instructions: https://ffmpeg.org/download.html")
-        sys.exit(1)
+        return False
 
 def sanitize_filename(filename):
     return re.sub(r'[^\w\-_.]', '_', filename)
@@ -36,6 +34,11 @@ def download_video(url, output_path, max_resolution=None, verbose=False):
     
     if max_resolution:
         ydl_opts['format'] = f'bestvideo[height<={max_resolution}]+bestaudio/best[height<={max_resolution}]'
+    
+    if not check_ffmpeg():
+        print("Warning: FFmpeg is not installed. Downloading video only without merging audio.")
+        ydl_opts['format'] = 'bestvideo/best'
+        ydl_opts['postprocessors'] = []
     
     max_retries = 3
     for attempt in range(max_retries):
@@ -405,6 +408,11 @@ def generate_thumbnail(output_folder):
     print("Thumbnail montage generated.")
 
 def main():
+    if not check_ffmpeg():
+        print("Warning: FFmpeg is not installed. Some features may be limited.")
+        print("For full functionality, please install FFmpeg:")
+        print("https://ffmpeg.org/download.html")
+    
     parser = argparse.ArgumentParser(
         description="Extract high-quality screenshots from YouTube videos or local video files.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
