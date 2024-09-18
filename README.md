@@ -6,7 +6,7 @@ This Python script is a versatile tool for extracting high-quality screenshots f
 
 ## Features
 
-- Download YouTube videos using yt-dlp
+- Download YouTube and other videos using yt-dlp
 - Process local video files
 - Multiple frame extraction methods:
   - Interval-based extraction
@@ -24,11 +24,15 @@ This Python script is a versatile tool for extracting high-quality screenshots f
 - Customizable output options (JPG or PNG)
 - Detailed logging and dry-run option
 - Load settings from a configuration file
+- Post-processing filters:
+  - Gradfun (reduce color banding, less aggressive)
+  - Deblock (reduce compression artifacts)
+  - Deband (reduce color banding, more aggressive)
 
 ## Requirements
 
 - Python 3.6+
-- FFmpeg (required for keyframe extraction)
+- FFmpeg (required for keyframe extraction and some post-processing filters)
 - Dependencies listed in `requirements.txt`
 - PyCUDA (optional, only required for GPU acceleration. Minimum version: 2022.1)
 
@@ -45,7 +49,7 @@ This Python script is a versatile tool for extracting high-quality screenshots f
    pip install -r requirements.txt
    ```
 
-3. Install FFmpeg (required for keyframe extraction):
+3. Install FFmpeg (required for keyframe extraction and some filters):
    - Follow the instructions at: https://ffmpeg.org/download.html
 
 4. (Optional) Install PyCUDA for GPU acceleration:
@@ -93,6 +97,9 @@ It's that easy! Now let's dive into all the configurable options.
 - `--verbose`: Enable detailed logging
 - `--dry-run`: Show what would be done without actually processing
 - `--config CONFIG`: Load settings from a configuration file
+- `--gradfun`: Apply gradfun filter to reduce color banding (less aggressive, preserves more detail)
+- `--deblock`: Apply deblocking filter to reduce compression artifacts
+- `--deband`: Apply debanding filter to reduce color banding (more aggressive, better for severe banding)
 
 ### Examples
 
@@ -115,9 +122,15 @@ It's that easy! Now let's dive into all the configurable options.
    ```
    python youtube-screenshot-script.py path/to/your/video.mp4 --use-gpu --thumbnail
    ```
+
 5. Download a YouTube video at a maximum resolution of 720p and extract frames:
    ```
    python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --max-resolution 720
+   ```
+
+6. Extract frames with post-processing filters:
+   ```
+   python youtube-screenshot-script.py path/to/your/video.mp4 --gradfun --deblock --deband
    ```
 
 ## What to Expect
@@ -127,6 +140,7 @@ It's that easy! Now let's dive into all the configurable options.
   - The 'all' frames method can be time-consuming for longer videos.
   - Scene detection is typically the most time-consuming method, especially for longer videos.
   - GPU acceleration can significantly speed up processing for all methods.
+  - Using post-processing filters (gradfun, deblock, deband) will increase processing time.
 	
 - **Video Resolution**: 
   - When downloading YouTube videos, the script will use the highest available quality by default. Use the `--max-resolution` option to limit the download quality if needed.
@@ -140,6 +154,12 @@ It's that easy! Now let's dive into all the configurable options.
   - `YY`: Blur score (higher numbers indicate less blur)
   - `_watermarked`: Suffix added if a watermark is detected
 
+- **Post-processing Filters**: 
+  - Gradfun is less aggressive and preserves more detail, suitable for subtle banding issues.
+  - Deband is more aggressive and better for severe banding problems, especially in dark scenes or sky gradients.
+  - Deblock helps reduce compression artifacts.
+  - Using filters will increase processing time, especially the FFmpeg-based filters (gradfun and deband).
+
 ## Tips
 
 - Start with the 'interval' method for quick results. Use scene detection for videos with distinct scene changes, but be prepared for longer processing times.
@@ -152,6 +172,12 @@ It's that easy! Now let's dive into all the configurable options.
   - Experiment with different quality and blur thresholds to find the best balance for your needs. Start with lower thresholds (e.g., `--quality 30 --blur 50`) and adjust as needed.
   - If processing is too slow, try disabling watermark detection or using GPU acceleration if available.
   - Use the `--fast-scene` option for quicker (but less accurate) scene detection results.
+- When using post-processing filters:
+  - Be aware that applying filters will increase processing time, especially the FFmpeg-based filters (gradfun and deband).
+  - Choose between gradfun and deband based on your needs:
+    - Use gradfun for subtle banding issues or to preserve more detail.
+    - Use deband for more severe banding problems, especially in dark scenes or sky gradients.
+  - Experiment with different combinations of filters to achieve the desired output quality.
 
 ## Troubleshooting
 
@@ -185,6 +211,11 @@ It's that easy! Now let's dive into all the configurable options.
 - **Low quality or blurry output**:
   - Increase the quality and blur thresholds.
   - Check if the source video is of sufficient quality.
+
+- **Post-processing filters not working**:
+  - Ensure FFmpeg is installed and accessible in your system PATH for gradfun and deband filters.
+  - Check if OpenCV (cv2) is installed correctly for the deblock filter.
+  - If issues persist with specific filters, try using them individually to isolate the problem.
 
 ## License
 
