@@ -1,4 +1,3 @@
-import yt_dlp
 import cv2
 import numpy as np
 import os
@@ -6,6 +5,7 @@ import argparse
 from datetime import datetime
 import re
 from PIL import Image
+import shlex
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,9 +14,33 @@ from tqdm import tqdm
 import time
 import tempfile
 
+
+def _get_subprocess_flags():
+    """Get subprocess flags to hide console windows on Windows."""
+    if sys.platform == "win32":
+        return subprocess.CREATE_NO_WINDOW
+    return 0
+
+
+# Patch subprocess to hide console windows on Windows before importing yt_dlp
+# This prevents FFmpeg popups when yt-dlp calls it internally for merging
+if sys.platform == "win32":
+    _original_popen_init = subprocess.Popen.__init__
+
+    def _patched_popen_init(self, *args, **kwargs):
+        if 'creationflags' not in kwargs:
+            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+        _original_popen_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _patched_popen_init
+
+import yt_dlp
+
+
 def check_ffmpeg():
     try:
-        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                      creationflags=_get_subprocess_flags())
         return True
     except FileNotFoundError:
         return False
@@ -24,36 +48,84 @@ def check_ffmpeg():
 def sanitize_filename(filename):
     return re.sub(r'[^\w\-_.]', '_', filename)
 
+def safe_print(text):
+    """Print text safely, handling Unicode characters on Windows console."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        # Replace problematic characters with ASCII equivalents
+        print(text.encode('ascii', 'replace').decode('ascii'))
+
+
 def download_video(url, output_path, max_resolution=None, verbose=False):
+    # Build format string with fallbacks for better compatibility
+    if max_resolution:
+        # Try requested resolution, fall back to best available if not found
+        format_str = (
+            f'bestvideo[height<={max_resolution}]+bestaudio/best[height<={max_resolution}]/'
+            f'bestvideo+bestaudio/best'
+        )
+    else:
+        format_str = 'bestvideo+bestaudio/best'
+
     ydl_opts = {
         'outtmpl': output_path,
-        'format': 'bestvideo+bestaudio/best',
+        'format': format_str,
         'merge_output_format': 'mp4',
-        'verbose': verbose,
+        'quiet': not verbose,
+        'no_warnings': not verbose,
+        'progress': verbose,
     }
-    
-    if max_resolution:
-        ydl_opts['format'] = f'bestvideo[height<={max_resolution}]+bestaudio/best[height<={max_resolution}]'
-    
+
     if not check_ffmpeg():
-        print("Warning: FFmpeg is not installed. Downloading video only without merging audio.")
+        safe_print("Warning: FFmpeg is not installed. Downloading video only without merging audio.")
         ydl_opts['format'] = 'bestvideo/best'
         ydl_opts['postprocessors'] = []
-    
+
     max_retries = 3
+    last_error = None
     for attempt in range(max_retries):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                video_title = info['title']
+                video_title = info.get('title', 'Unknown')
+                if not verbose:
+                    safe_print(f"Downloading: {video_title}...")
                 ydl.download([url])
+                if not verbose:
+                    safe_print("Download complete.")
             return video_title
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"Download attempt {attempt + 1} failed. Retrying...")
+        except yt_dlp.utils.DownloadError as e:
+            last_error = e
+            error_msg = str(e)
+            # Check for specific error types and give helpful messages
+            if 'Requested format is not available' in error_msg:
+                safe_print(f"Error: The requested video format is not available from this site.")
+                safe_print("This site may not support the selected resolution or format.")
+                safe_print("Try: Remove the resolution limit, or use a different source.")
+                raise
+            elif '403' in error_msg or 'Forbidden' in error_msg:
+                if attempt < max_retries - 1:
+                    safe_print(f"Download attempt {attempt + 1} failed (rate limited). Retrying...")
+                    continue
+            elif 'Private video' in error_msg or 'Sign in' in error_msg:
+                safe_print("Error: This video is private or requires authentication.")
+                raise
             else:
-                print(f"Failed to download video after {max_retries} attempts.")
-                raise e
+                if attempt < max_retries - 1:
+                    safe_print(f"Download attempt {attempt + 1} failed. Retrying...")
+                    continue
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                safe_print(f"Download attempt {attempt + 1} failed. Retrying...")
+            else:
+                safe_print(f"Failed to download video after {max_retries} attempts.")
+                raise
+
+    safe_print(f"Failed to download video after {max_retries} attempts.")
+    if last_error:
+        raise last_error
 
 def calculate_quality_score(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -122,6 +194,8 @@ def detect_watermark(frame, threshold):
     
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
+        if h == 0 or w == 0:
+            continue
         aspect_ratio = float(w) / h
         fill_ratio = cv2.contourArea(contour) / (w * h)
         
@@ -135,14 +209,6 @@ def detect_watermark(frame, threshold):
     return False
 
 def apply_filters(frame, gradfun, deblock, deband, verbose):
-    if gradfun or deblock or deband:
-        try:
-            import cv2
-        except ImportError:
-            print("Error: OpenCV (cv2) is required for filter application.")
-            print("Please install it with: pip install opencv-python")
-            sys.exit(1)
-
     if gradfun:
         try:
             frame = apply_ffmpeg_filter(frame, 'gradfun=1.2:8', verbose)
@@ -158,18 +224,24 @@ def apply_filters(frame, gradfun, deblock, deband, verbose):
 
     return frame
 
-import shlex
 
 def apply_ffmpeg_filter(frame, filter_string, verbose):
-    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_in, \
-         tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_out:
-        cv2.imwrite(temp_in.name, frame)
+    temp_in_name = None
+    temp_out_name = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_in:
+            temp_in_name = temp_in.name
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_out:
+            temp_out_name = temp_out.name
+
+        cv2.imwrite(temp_in_name, frame)
         ffmpeg_cmd = [
-            'ffmpeg', '-i', temp_in.name, '-vf', filter_string, '-y', temp_out.name
+            'ffmpeg', '-i', temp_in_name, '-vf', filter_string, '-y', temp_out_name
         ]
         try:
-            result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
-            return cv2.imread(temp_out.name)
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True,
+                          creationflags=_get_subprocess_flags())
+            return cv2.imread(temp_out_name)
         except subprocess.CalledProcessError as e:
             if verbose:
                 print(f"Error running FFmpeg command: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
@@ -180,6 +252,12 @@ def apply_ffmpeg_filter(frame, filter_string, verbose):
                 print(f"Error: FFmpeg not found. Command attempted: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
                 print("Please ensure FFmpeg is installed and in your system PATH.")
             return frame
+    finally:
+        # Clean up temporary files
+        if temp_in_name and os.path.exists(temp_in_name):
+            os.unlink(temp_in_name)
+        if temp_out_name and os.path.exists(temp_out_name):
+            os.unlink(temp_out_name)
 
 def process_frame(args):
     frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu, gradfun, deblock, deband, verbose = args
@@ -282,16 +360,21 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         frame_interval = 1
     elif method == 'keyframes':
         check_ffmpeg()
-        ffmpeg_command = (
-            f"ffmpeg -i {video_path} "
-            f"-vf select='eq(pict_type,PICT_TYPE_I)',"
-            f"scale=in_range=full:out_range=tv,"
-            f"zscale=t=linear:npl=100:m=bt709:r=tv,"
-            f"format=yuv420p "
-            f"-fps_mode vfr "
-            f"-q:v 2 {output_folder}/keyframe_%03d.jpg"
-        )
-        os.system(ffmpeg_command)
+        output_pattern = os.path.join(output_folder, "keyframe_%03d.jpg")
+        ffmpeg_command = [
+            "ffmpeg", "-i", video_path,
+            "-vf", "select='eq(pict_type,PICT_TYPE_I)',scale=in_range=full:out_range=tv,zscale=t=linear:npl=100:m=bt709:r=tv,format=yuv420p",
+            "-fps_mode", "vfr",
+            "-q:v", "2",
+            output_pattern
+        ]
+        try:
+            subprocess.run(ffmpeg_command, check=True, capture_output=True,
+                          creationflags=_get_subprocess_flags())
+        except subprocess.CalledProcessError as e:
+            print(f"Error during keyframe extraction: {e.stderr.decode() if e.stderr else 'Unknown error'}")
+            video.release()
+            return 0, 0, 0
         video.release()
         print("Keyframe extraction complete.")
         return total_frames, 0, total_frames
@@ -351,7 +434,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                 future_to_frame = {executor.submit(process_frame, args): args for args in frames_to_process}
                 for future in as_completed(future_to_frame):
                     result, saved = future.result()
-                    print(result)
+                    safe_print(result)
                     if saved:
                         saved_frames += 1
                     else:
@@ -370,7 +453,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         else:
             for args in frames_to_process:
                 result, saved = process_frame(args)
-                print(result)
+                safe_print(result)
                 if saved:
                     saved_frames += 1
                 else:
@@ -391,21 +474,38 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
 
 def generate_thumbnail(output_folder):
     frames = [f for f in os.listdir(output_folder) if f.endswith('.jpg') or f.endswith('.png')]
+    # Exclude the montage itself if regenerating
+    frames = [f for f in frames if not f.startswith('thumbnail_montage')]
     if not frames:
         print("No frames found to generate thumbnail.")
         return
-    
+
     frames.sort()
-    images = [Image.open(os.path.join(output_folder, f)) for f in frames[:9]]  # Take first 9 frames
-    
+    total = len(frames)
+
+    # Select 9 frames spread across the output for variety
+    # If we have fewer than 9 frames, just use what we have
+    if total <= 9:
+        selected_frames = frames
+    else:
+        # Pick frames at roughly equal intervals across the entire set
+        # This gives a representative sample even with 1000+ frames
+        indices = [int(i * (total - 1) / 8) for i in range(9)]
+        selected_frames = [frames[i] for i in indices]
+
+    images = [Image.open(os.path.join(output_folder, f)) for f in selected_frames]
+
     width, height = images[0].size
-    thumbnail = Image.new('RGB', (width * 3, height * 3))
-    
+    # Calculate grid size based on number of images
+    cols = min(3, len(images))
+    rows = (len(images) + cols - 1) // cols
+    thumbnail = Image.new('RGB', (width * cols, height * rows))
+
     for i, image in enumerate(images):
-        thumbnail.paste(image, ((i % 3) * width, (i // 3) * height))
-    
+        thumbnail.paste(image, ((i % cols) * width, (i // cols) * height))
+
     thumbnail.save(os.path.join(output_folder, 'thumbnail_montage.jpg'))
-    print("Thumbnail montage generated.")
+    print(f"Thumbnail montage generated from {len(selected_frames)} frames (of {total} total).")
 
 def main():
     if not check_ffmpeg():
@@ -545,8 +645,8 @@ Note:
     else:
         output_folder = f"screenshots_{sanitized_title}_{timestamp}"
     
-    print(f"Video source: {video_path}")
-    print(f"Extracting frames to: {output_folder}")
+    safe_print(f"Video source: {video_path}")
+    safe_print(f"Extracting frames to: {output_folder}")
     print(f"Extraction method: {args.method}")
     print(f"Quality threshold set to {args.quality:.1f} (Range: 0-100, Higher is stricter)")
     print(f"Blur threshold set to {args.blur:.1f} (Higher values allow less blur)")
@@ -582,7 +682,7 @@ Note:
         end_time = time.time()
         
         execution_time = end_time - start_time
-        frames_per_second = total_frames / execution_time
+        frames_per_second = total_frames / execution_time if execution_time > 0 else 0
         
         print(f"\nFrame extraction complete.")
         print(f"Total execution time: {execution_time:.2f} seconds")
