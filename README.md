@@ -1,229 +1,139 @@
-# YouTube Screenshot Extractor (But Not Just for YouTube!) and Dataset Gatherer
+# YouTube Screenshot Extractor and Dataset Gatherer
 
-## Overview
-
-This Python script is a versatile tool for extracting high-quality screenshots from YouTube videos, local video files, or any other video source you can think of! It's particularly useful for preparing datasets for machine learning projects, such as training Loras or checkpoints, or just for grabbing that perfect frame from your favorite movie.
+Extract high-quality frames from YouTube videos, local video files, or any yt-dlp supported source (1000+ sites). Useful for ML dataset preparation (LoRAs, checkpoints) or grabbing specific frames.
 
 ## Features
 
-- Download YouTube and other videos using yt-dlp
+- Download from YouTube and 1000+ sites via yt-dlp
 - Process local video files
-- Multiple frame extraction methods:
-  - Interval-based extraction
-  - All frames extraction
-  - Keyframe extraction
-  - Scene detection
-- Quality assessment of frames
-- Blur detection
-- Automatic removal of black bars
+- Multiple extraction methods: interval, all frames, keyframes, scene detection
+- Quality and blur filtering
+- Automatic black bar removal
 - Basic watermark detection
-- Parallel processing for faster execution
-- GPU acceleration (if available)
+- Parallel processing and optional GPU acceleration
 - Resume interrupted extractions
-- Generate thumbnail montages
-- Customizable output options (JPG or PNG)
-- Detailed logging and dry-run option
-- Load settings from a configuration file
-- Post-processing filters:
-  - Gradfun (reduce color banding, less aggressive)
-  - Deblock (reduce compression artifacts)
-  - Deband (reduce color banding, more aggressive)
+- Post-processing filters (gradfun, deblock, deband)
+- **GUI and command-line interfaces**
+
+## Quick Start (Windows)
+
+**Double-click `START.bat`** and select:
+1. **Initial Setup** - First time only, creates environment and installs dependencies
+2. **Install Deno** - **Required for YouTube** (other sites work without it)
+3. **Launch GUI** - Start the graphical interface
+
+The menu also offers yt-dlp updates and optional GPU support.
 
 ## Requirements
 
-- Python 3.6+
-- FFmpeg (required for keyframe extraction and some post-processing filters)
-- Dependencies listed in `requirements.txt`
-- PyCUDA (optional, only required for GPU acceleration. Minimum version: 2022.1)
+- Python 3.10+
+- [Deno](https://deno.land/) - **Required for YouTube downloads** (use `START.bat` option 3, or `winget install DenoLand.Deno`)
+- [FFmpeg](https://ffmpeg.org/download.html) - Required for keyframe extraction and filters
+- PyCUDA (optional) - for NVIDIA GPU acceleration
 
-## Installation
+**Important:** Keep yt-dlp updated regularly. Use `START.bat` option 2, or run: `pip install --upgrade yt-dlp`
 
-1. Clone this repository:
-   ```
-   git clone https://github.com/EnragedAntelope/youtube-screenshot-extractor.git
-   cd youtube-screenshot-extractor
-   ```
+## Manual Installation
 
-2. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+If you prefer not to use `START.bat`:
 
-3. Install FFmpeg (required for keyframe extraction and some filters):
-   - Follow the instructions at: https://ffmpeg.org/download.html
+```bash
+git clone https://github.com/EnragedAntelope/youtube-screenshot-extractor.git
+cd youtube-screenshot-extractor
+python -m venv venv
+venv\Scripts\activate  # Windows
+pip install -r requirements.txt
 
-4. (Optional) Install PyCUDA for GPU acceleration:
-   ```
-   pip install pycuda>=2022.1
-   ```
-   Note: PyCUDA requires CUDA to be installed on your system. For installation instructions, refer to the [PyCUDA documentation](https://documen.tician.de/pycuda/).
+# Install Deno (required for YouTube)
+winget install DenoLand.Deno
+```
 
 ## Usage
 
-Basic syntax:
-```
-python youtube-screenshot-script.py [SOURCE] [OPTIONS]
-```
+### GUI (Recommended)
 
-Where `[SOURCE]` can be either a YouTube URL or a path to a local video file.
-
-Note: If you plan to use GPU acceleration (--use-gpu option), make sure you have PyCUDA installed.
-
-### Quick Start Example
-
-Extract frames every 5 seconds from a YouTube video and save them to a custom folder:
-```
-python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --output my_awesome_screenshots
+```bash
+python youtube-screenshot-gui.py
 ```
 
-It's that easy! Now let's dive into all the configurable options.
+The GUI provides all options with helpful tooltips, good defaults pre-selected, and a clean interface.
 
-### Options
+### Command Line
 
-- `--method {interval,all,keyframes,scene}`: Frame extraction method (default: interval)
-- `--interval INTERVAL`: Interval between frames in seconds (default: 5.0, only used with 'interval' method)
-- `--quality QUALITY`: Quality threshold for frame selection (0-100, default: 12.0)
-- `--blur BLUR`: Blur threshold for frame selection (default: 10.0)
-- `--detect-watermarks`: Enable basic watermark detection
-- `--watermark-threshold THRESHOLD`: Watermark detection sensitivity (0-1, default: 0.8)
-- `--max-resolution RESOLUTION`: Maximum resolution for YouTube video download (e.g., 720, 1080). Ignored for local files.
-- `--output OUTPUT`: Custom output folder name
-- `--png`: Save frames as PNG instead of JPG
-- `--disable-parallel`: Disable parallel processing of frames
-- `--use-gpu`: Use GPU acceleration if available
-- `--fast-scene`: Use fast mode for scene detection (less accurate results)
-- `--resume`: Resume an interrupted extraction process
-- `--thumbnail`: Generate a thumbnail montage of extracted frames
-- `--verbose`: Enable detailed logging
-- `--dry-run`: Show what would be done without actually processing
-- `--config CONFIG`: Load settings from a configuration file
-- `--gradfun`: Apply gradfun filter to reduce color banding (less aggressive, preserves more detail)
-- `--deblock`: Apply deblocking filter to reduce compression artifacts
-- `--deband`: Apply debanding filter to reduce color banding (more aggressive, better for severe banding)
+```bash
+# Extract frames using scene detection from YouTube
+python youtube-screenshot-script.py https://www.youtube.com/watch?v=VIDEO_ID --method scene
 
-### Examples
+# Extract keyframes from local file
+python youtube-screenshot-script.py video.mp4 --method keyframes
 
-1. Extract keyframes from a local video file:
-   ```
-   python youtube-screenshot-script.py path/to/your/video.mp4 --method keyframes
-   ```
+# Optimal quality extraction with filters
+python youtube-screenshot-script.py video.mp4 --quality 50 --blur 100 --detect-watermarks --deblock --thumbnail
+```
 
-2. Use scene detection on a YouTube video with custom output folder:
-   ```
-   python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --method scene --output my_scene_shots
-   ```
+## Options
 
-3. Extract frames every 10 seconds with a lower quality threshold and PNG output:
-   ```
-   python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --interval 10 --quality 30 --png
-   ```
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--method` | `interval`, `all`, `keyframes`, or `scene` | interval |
+| `--interval` | Seconds between frames (interval method only) | 5.0 |
+| `--quality` | Quality threshold 0-100 (higher = stricter) | 12.0 |
+| `--blur` | Blur threshold (higher = less blur allowed) | 10.0 |
+| `--max-resolution` | Limit download resolution (e.g., 720, 1080) | best |
+| `--output` | Custom output folder name | auto |
+| `--png` | Save as PNG instead of JPG | JPG |
+| `--detect-watermarks` | Enable watermark detection | off |
+| `--watermark-threshold` | Watermark sensitivity 0-1 | 0.8 |
+| `--use-gpu` | Enable GPU acceleration | off |
+| `--fast-scene` | Faster but less accurate scene detection | off |
+| `--resume` | Resume interrupted extraction | off |
+| `--thumbnail` | Generate 3x3 thumbnail montage | off |
+| `--verbose` | Detailed logging | off |
+| `--dry-run` | Preview without processing | off |
+| `--config` | Load settings from JSON file | none |
+| `--gradfun` | Reduce color banding (subtle) | off |
+| `--deblock` | Reduce compression artifacts | off |
+| `--deband` | Reduce color banding (aggressive) | off |
 
-4. Use GPU acceleration and generate a thumbnail montage:
-   ```
-   python youtube-screenshot-script.py path/to/your/video.mp4 --use-gpu --thumbnail
-   ```
+## Output
 
-5. Download a YouTube video at a maximum resolution of 720p and extract frames:
-   ```
-   python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --max-resolution 720
-   ```
-
-6. Extract frames with post-processing filters:
-   ```
-   python youtube-screenshot-script.py path/to/your/video.mp4 --gradfun --deblock --deband
-   ```
-
-## What to Expect
-
-- **Processing Time**: 
-  - The 'interval' and 'keyframes' methods are generally the fastest.
-  - The 'all' frames method can be time-consuming for longer videos.
-  - Scene detection is typically the most time-consuming method, especially for longer videos.
-  - GPU acceleration can significantly speed up processing for all methods.
-  - Using post-processing filters (gradfun, deblock, deband) will increase processing time.
-	
-- **Video Resolution**: 
-  - When downloading YouTube videos, the script will use the highest available quality by default. Use the `--max-resolution` option to limit the download quality if needed.
-  - For local video files, the original resolution is always used, and the `--max-resolution` option is ignored.
-
-- **Output**: Frames are saved as JPG or PNG images in the specified output folder (or a default folder named after the video title).
-
-- **Frame Filenames**: Follow the format `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`, where:
-  - `NNNNNN`: Frame number
-  - `XX`: Quality score (0-99, higher is better)
-  - `YY`: Blur score (higher numbers indicate less blur)
-  - `_watermarked`: Suffix added if a watermark is detected
-
-- **Post-processing Filters**: 
-  - Gradfun is less aggressive and preserves more detail, suitable for subtle banding issues.
-  - Deband is more aggressive and better for severe banding problems, especially in dark scenes or sky gradients.
-  - Deblock helps reduce compression artifacts.
-  - Using filters will increase processing time, especially the FFmpeg-based filters (gradfun and deband).
+Frames are saved as: `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`
+- `NNNNNN`: Frame number
+- `XX`: Quality score (0-99, higher is better)
+- `YY`: Blur score (higher = sharper)
+- `_watermarked`: Added if watermark detected
 
 ## Tips
 
-- Start with the 'interval' method for quick results. Use scene detection for videos with distinct scene changes, but be prepared for longer processing times.
-- Use the `--dry-run` option to preview the extraction process without actually saving frames.
-- For large videos or long-running processes:
-  - Use the `--resume` option in case the process is interrupted.
-  - Consider using the `--max-resolution` option to limit download quality for faster processing and to conserve storage space.
-    - Note: The --max-resolution option only applies when downloading YouTube videos. It has no effect when processing local video files.
-- To optimize quality and performance:
-  - Experiment with different quality and blur thresholds to find the best balance for your needs. Start with lower thresholds (e.g., `--quality 30 --blur 50`) and adjust as needed.
-  - If processing is too slow, try disabling watermark detection or using GPU acceleration if available.
-  - Use the `--fast-scene` option for quicker (but less accurate) scene detection results.
-- When using post-processing filters:
-  - Be aware that applying filters will increase processing time, especially the FFmpeg-based filters (gradfun and deband).
-  - Choose between gradfun and deband based on your needs:
-    - Use gradfun for subtle banding issues or to preserve more detail.
-    - Use deband for more severe banding problems, especially in dark scenes or sky gradients.
-  - Experiment with different combinations of filters to achieve the desired output quality.
+- **Speed**: `keyframes` is fastest. `scene` finds natural cuts. `interval` and `all` can be very slow.
+- **Quality tuning**: Start with `--quality 30 --blur 50` and adjust based on results.
+- **Large videos**: Use `--resume` and `--max-resolution 1080` to manage long processes and avoid rate limiting.
+- **Filters**: Use `--gradfun` for subtle banding, `--deband` for severe banding. Filters increase processing time.
+- **Other sites**: Most of the 1000+ sites yt-dlp supports will work. Some may not support all resolution options.
 
 ## Troubleshooting
 
-- **Video Source gives authentication/other error**: 
-  - Try updating yt-dlp using `pip install --upgrade yt-dlp`
+| Problem | Solution |
+|---------|----------|
+| YouTube download fails | Install Deno: `winget install DenoLand.Deno` (required since Nov 2025) |
+| Authentication/download errors | Update yt-dlp: `pip install --upgrade yt-dlp` |
+| "Format not available" error | Remove resolution limit or try a different source - some sites have limited formats |
+| No frames extracted | Lower thresholds: `--quality 20 --blur 30` |
+| Keyframe extraction fails | Ensure FFmpeg is installed and in PATH |
+| Scene detection slow/crashes | Use `--fast-scene` or process shorter segments |
+| GPU not working | Verify CUDA and PyCUDA installation, or remove `--use-gpu` |
+| False watermark positives | Increase threshold: `--watermark-threshold 0.9` |
+| Process dies on large videos | Use `--resume`, check disk space |
 
-- **No frames extracted**: 
-  - Lower the quality and blur thresholds (e.g., `--quality 20 --blur 30`).
-  - Check if the video file is corrupted or if yt-dlp failed to download it properly.
+## GPU Acceleration (Optional)
 
-- **Keyframe extraction issues**: 
-  - Ensure FFmpeg is properly installed and accessible in your system PATH.
-  - Try updating FFmpeg to the latest version.
+For NVIDIA GPUs, install PyCUDA for faster processing:
 
-- **Scene detection extremely slow or crashing**:
-  - Use the `--fast-scene` option for quicker but less accurate results.
-  - Try processing a shorter segment of the video first to test.
-  - Ensure you have enough RAM available.
+1. Install [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)
+2. Run `START.bat` option 4, or: `pip install pycuda`
 
-- **GPU acceleration not working**:
-  - Verify that you have CUDA-compatible GPU and the necessary CUDA libraries installed.
-  - Check if PyCUDA is installed correctly (`pip install pycuda`).
-  - If issues persist, fall back to CPU processing by removing the `--use-gpu` flag.
-
-- **Watermark detection producing false positives**:
-  - Adjust the watermark threshold (e.g., `--watermark-threshold 0.9` for stricter detection).
-  - If unnecessary, disable watermark detection by removing the `--detect-watermarks` flag.
-
-- **Process dies unexpectedly for large videos**:
-  - Use the `--resume` option to continue from where it left off.
-  - Try processing the video in smaller segments.
-  - Ensure you have enough free disk space.
-
-- **Low quality or blurry output**:
-  - Increase the quality and blur thresholds.
-  - Check if the source video is of sufficient quality.
-
-- **Post-processing filters not working**:
-  - Ensure FFmpeg is installed and accessible in your system PATH for gradfun and deband filters.
-  - Check if OpenCV (cv2) is installed correctly for the deblock filter.
-  - If issues persist with specific filters, try using them individually to isolate the problem.
+**Note:** PyCUDA installation takes 5-10 minutes. Only recommended if processing many videos. Modern CPUs are usually fast enough.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+MIT License - see [LICENSE](LICENSE)
