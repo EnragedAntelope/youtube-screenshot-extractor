@@ -19,26 +19,30 @@ echo.
 echo   [3] Install Deno - REQUIRED for YouTube
 echo       JavaScript runtime needed for YouTube downloads
 echo.
-echo   [4] Install GPU Support - optional, rarely needed
+echo   [4] Install FFmpeg - REQUIRED for keyframes/filters
+echo       Media processing tool needed for advanced features
+echo.
+echo   [5] Install GPU Support - optional, rarely needed
 echo       PyCUDA for NVIDIA GPU - modern CPUs are usually fast enough
 echo.
-echo   [5] Launch GUI
+echo   [6] Launch GUI
 echo       Start the graphical interface
 echo.
-echo   [6] Launch Command Line Help
+echo   [7] Launch Command Line Help
 echo       Show all command line options
 echo.
-echo   [7] Exit
+echo   [8] Exit
 echo.
-set /p choice="  Enter your choice [1-7]: "
+set /p choice="  Enter your choice [1-8]: "
 
 if "%choice%"=="1" goto setup
 if "%choice%"=="2" goto update_ytdlp
 if "%choice%"=="3" goto install_deno
-if "%choice%"=="4" goto install_gpu
-if "%choice%"=="5" goto launch_gui
-if "%choice%"=="6" goto launch_help
-if "%choice%"=="7" goto end
+if "%choice%"=="4" goto install_ffmpeg
+if "%choice%"=="5" goto install_gpu
+if "%choice%"=="6" goto launch_gui
+if "%choice%"=="7" goto launch_help
+if "%choice%"=="8" goto end
 
 echo.
 echo  Invalid choice. Please try again.
@@ -118,10 +122,11 @@ echo  ================================================================
 echo   Setup Complete!
 echo  ================================================================
 echo.
-echo  IMPORTANT: For YouTube downloads, you need Deno installed.
-echo  Run option [3] to install Deno if you haven't already.
+echo  IMPORTANT NEXT STEPS:
+echo  - Run option [3] to install Deno (required for YouTube)
+echo  - Run option [4] to install FFmpeg (required for keyframes/filters)
 echo.
-echo  Use option [5] to launch the GUI.
+echo  Then use option [6] to launch the GUI.
 echo.
 pause
 goto menu
@@ -212,6 +217,99 @@ if errorlevel 1 (
     echo  NOTE: You may need to restart your terminal or computer
     echo  for Deno to be recognized in PATH.
 )
+echo.
+pause
+goto menu
+
+:install_ffmpeg
+cls
+echo.
+echo  ================================================================
+echo   FFmpeg Installation - Required for Keyframes/Filters
+echo  ================================================================
+echo.
+echo  FFmpeg is REQUIRED for:
+echo    - Keyframe extraction (--method keyframes)
+echo    - Scene detection (--method scene)
+echo    - Post-processing filters (--deblock, --deband, etc.)
+echo.
+echo  The tool will work without FFmpeg for basic interval extraction,
+echo  but most features require it.
+echo.
+
+REM Check if FFmpeg is already installed
+ffmpeg -version >nul 2>&1
+if not errorlevel 1 (
+    echo  FFmpeg is already installed!
+    ffmpeg -version 2^>^&1 | findstr "ffmpeg version"
+    echo.
+    pause
+    goto menu
+)
+
+echo  FFmpeg is NOT currently installed.
+echo.
+echo  Installation options for Windows:
+echo.
+echo  [1] Chocolatey (recommended if you have choco)
+echo      choco install ffmpeg
+echo.
+echo  [2] Winget
+echo      winget install Gyan.FFmpeg
+echo.
+echo  [3] Manual download
+echo      https://ffmpeg.org/download.html
+echo.
+set /p ffmpeg_choice="  Choose installation method [1/2/3] or 'n' to skip: "
+
+if "%ffmpeg_choice%"=="1" (
+    echo.
+    echo  Checking for Chocolatey...
+    choco --version >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo  Chocolatey not found. Install from https://chocolatey.org
+        echo  Or choose a different installation method.
+    ) else (
+        echo.
+        echo  Installing FFmpeg via Chocolatey...
+        choco install ffmpeg -y
+        if errorlevel 1 (
+            echo.
+            echo  Installation failed. Try manual installation.
+        ) else (
+            echo.
+            echo  FFmpeg installed successfully!
+            echo  NOTE: You may need to restart your terminal.
+        )
+    )
+) else if "%ffmpeg_choice%"=="2" (
+    echo.
+    echo  Installing FFmpeg via winget...
+    winget install --id=Gyan.FFmpeg -e
+    if errorlevel 1 (
+        echo.
+        echo  Winget installation failed.
+        echo  Try chocolatey or manual installation.
+    ) else (
+        echo.
+        echo  FFmpeg installed successfully!
+        echo  NOTE: You may need to restart your terminal.
+    )
+) else if "%ffmpeg_choice%"=="3" (
+    echo.
+    echo  Manual installation:
+    echo    1. Go to https://www.gyan.dev/ffmpeg/builds/
+    echo    2. Download ffmpeg-release-essentials.zip
+    echo    3. Extract the archive
+    echo    4. Add the bin folder to your system PATH
+    echo.
+    echo  Or download from: https://ffmpeg.org/download.html
+) else (
+    echo.
+    echo  Installation skipped.
+)
+
 echo.
 pause
 goto menu
