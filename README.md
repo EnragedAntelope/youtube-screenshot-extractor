@@ -1,7 +1,8 @@
 # YouTube Screenshot Extractor and Dataset Gatherer
 
 Extract high-quality frames from YouTube videos, local video files, or any yt-dlp supported source (1000+ sites). Useful for ML dataset preparation (LoRAs, checkpoints) or grabbing specific frames.
-<img width="1887" height="1512" alt="image" src="https://github.com/user-attachments/assets/b604e3c9-152b-4a44-927a-a6e8767a5279" /><img width="1728" height="1539" alt="image" src="https://github.com/user-attachments/assets/64a44030-ccce-4034-9b35-e951a15ff5d0" />
+<img width="1909" height="1624" alt="image" src="https://github.com/user-attachments/assets/4a98db38-902b-4143-b184-63a6c833fb4a" />
+<img width="1728" height="1539" alt="image" src="https://github.com/user-attachments/assets/64a44030-ccce-4034-9b35-e951a15ff5d0" />
 
 
 
@@ -18,37 +19,80 @@ Extract high-quality frames from YouTube videos, local video files, or any yt-dl
 - Post-processing filters (gradfun, deblock, deband)
 - **GUI and command-line interfaces**
 
-## Quick Start (Windows)
+## Quick Start
 
-**Double-click `START.bat`** and select:
+### Windows
+**Double-click `START.bat`** and use the menu:
 1. **Initial Setup** - First time only, creates environment and installs dependencies
-2. **Install Deno** - **Required for YouTube** (other sites work without it)
-3. **Launch GUI** - Start the graphical interface
+3. **Install Deno** - **Required for YouTube** (other sites work without it)
+4. **Install FFmpeg** - **Required for keyframes and some filters**
+6. **Launch GUI** - Start the graphical interface
 
-The menu also offers yt-dlp updates and optional GPU support.
+The menu also offers yt-dlp updates (option 2) and optional GPU support (option 5).
+
+### macOS / Linux
+**Run `./start.sh`** in terminal and use the menu:
+1. **Initial Setup** - First time only, creates environment and installs dependencies
+3. **Install Deno** - **Required for YouTube** (other sites work without it)
+4. **Install FFmpeg** - **Required for keyframes and some filters**
+6. **Launch GUI** - Start the graphical interface
+
+The menu also offers yt-dlp updates (option 2) and optional GPU support (option 5).
 
 ## Requirements
 
 - Python 3.10+
-- [Deno](https://deno.land/) - **Required for YouTube downloads** (use `START.bat` option 3, or `winget install DenoLand.Deno`)
-- [FFmpeg](https://ffmpeg.org/download.html) - Required for keyframe extraction and filters
+- [Deno](https://deno.land/) - **Required for YouTube downloads**
+  - Windows: Use `START.bat` option 3, or `winget install DenoLand.Deno`
+  - macOS: Use `./start.sh` option 3, or `brew install deno`
+  - Linux: Use `./start.sh` option 3, or `curl -fsSL https://deno.land/install.sh | sh`
+- [FFmpeg](https://ffmpeg.org/download.html) - **Required for keyframes, gradfun/deband filters, and audio merging**
+  - Windows: Use `START.bat` option 4, or `winget install Gyan.FFmpeg`
+  - macOS: Use `./start.sh` option 4, or `brew install ffmpeg`
+  - Linux: Use `./start.sh` option 4, or `sudo apt install ffmpeg` (Ubuntu/Debian)
+  - Note: Scene detection and deblock filter work without FFmpeg
 - PyCUDA (optional) - for NVIDIA GPU acceleration
 
-**Important:** Keep yt-dlp updated regularly. Use `START.bat` option 2, or run: `pip install --upgrade yt-dlp`
+**Important:** Keep yt-dlp updated regularly. Use startup script option 2, or run: `pip install --upgrade yt-dlp`
 
 ## Manual Installation
 
-If you prefer not to use `START.bat`:
+If you prefer not to use the startup scripts:
 
+### Windows
 ```bash
 git clone https://github.com/EnragedAntelope/youtube-screenshot-extractor.git
 cd youtube-screenshot-extractor
 python -m venv venv
-venv\Scripts\activate  # Windows
+venv\Scripts\activate
 pip install -r requirements.txt
 
 # Install Deno (required for YouTube)
 winget install DenoLand.Deno
+
+# Install FFmpeg (required for keyframes/filters)
+winget install Gyan.FFmpeg
+```
+
+### macOS / Linux
+```bash
+git clone https://github.com/EnragedAntelope/youtube-screenshot-extractor.git
+cd youtube-screenshot-extractor
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Install Deno (required for YouTube)
+# macOS:
+brew install deno
+# Linux:
+curl -fsSL https://deno.land/install.sh | sh
+
+# Install FFmpeg (required for keyframes/filters)
+# macOS:
+brew install ffmpeg
+# Linux (Ubuntu/Debian):
+sudo apt install ffmpeg
 ```
 
 ## Usage
@@ -118,7 +162,7 @@ Frames are saved as: `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`
 
 | Problem | Solution |
 |---------|----------|
-| YouTube download fails | Install Deno: `winget install DenoLand.Deno` (required since Nov 2025) |
+| YouTube download fails | Install Deno (required since Nov 2025):<br>Windows: `winget install DenoLand.Deno`<br>macOS: `brew install deno`<br>Linux: `curl -fsSL https://deno.land/install.sh \| sh` |
 | Authentication/download errors | Update yt-dlp: `pip install --upgrade yt-dlp` |
 | "Format not available" error | Remove resolution limit or try a different source - some sites have limited formats |
 | No frames extracted | Lower thresholds: `--quality 20 --blur 30` |
@@ -133,7 +177,9 @@ Frames are saved as: `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`
 For NVIDIA GPUs, install PyCUDA for faster processing:
 
 1. Install [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)
-2. Run `START.bat` option 4, or: `pip install pycuda`
+2. Windows: Run `START.bat` option 5
+   macOS/Linux: Run `./start.sh` option 5
+   Or manually: `pip install pycuda`
 
 **Note:** PyCUDA installation takes 5-10 minutes. Only recommended if processing many videos. Modern CPUs are usually fast enough.
 
