@@ -46,7 +46,54 @@ def check_ffmpeg():
         return False
 
 def sanitize_filename(filename):
+    """Sanitize a filename by replacing unsafe characters with underscores."""
     return re.sub(r'[^\w\-_.]', '_', filename)
+
+
+def sanitize_output_path(path):
+    """Sanitize an output path while preserving directory structure.
+
+    If the path contains directory separators or is absolute, treat it as a
+    user-specified path and preserve it (only sanitizing the final component).
+    If it's just a simple name, sanitize the entire thing as a folder name.
+
+    Args:
+        path: User-provided output path (can be absolute, relative, or just a name)
+
+    Returns:
+        A safe path string that preserves the user's intended directory structure
+    """
+    if not path:
+        return path
+
+    # Normalize path separators for the current OS
+    normalized = os.path.normpath(path)
+
+    # Check if this is a path (has directory components) or just a folder name
+    # A path has separators, or is absolute, or has a drive letter (Windows)
+    has_separators = os.path.sep in path or '/' in path or '\\' in path
+    is_absolute = os.path.isabs(normalized)
+    has_drive = os.name == 'nt' and len(normalized) >= 2 and normalized[1] == ':'
+
+    if has_separators or is_absolute or has_drive:
+        # User specified a path - preserve directory structure
+        # Split into directory and final component
+        parent_dir = os.path.dirname(normalized)
+        folder_name = os.path.basename(normalized)
+
+        # Sanitize only the final folder name if it exists and isn't empty
+        if folder_name:
+            sanitized_name = sanitize_filename(folder_name)
+            if parent_dir:
+                return os.path.join(parent_dir, sanitized_name)
+            else:
+                return sanitized_name
+        else:
+            # Path ends with separator, use as-is (e.g., "C:\Screenshots\")
+            return normalized
+    else:
+        # Just a folder name - sanitize the whole thing
+        return sanitize_filename(path)
 
 def safe_print(text):
     """Print text safely, handling Unicode characters on Windows console."""
@@ -655,7 +702,7 @@ Note:
         sanitized_title = sanitize_filename(video_title)
     
     if args.output:
-        output_folder = sanitize_filename(args.output)
+        output_folder = sanitize_output_path(args.output)
     else:
         output_folder = f"screenshots_{sanitized_title}_{timestamp}"
     
