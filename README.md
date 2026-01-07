@@ -1,7 +1,8 @@
 # YouTube Screenshot Extractor and Dataset Gatherer
 
 Extract high-quality frames from YouTube videos, local video files, or any yt-dlp supported source (1000+ sites). Useful for ML dataset preparation (LoRAs, checkpoints) or grabbing specific frames.
-<img width="1887" height="1512" alt="image" src="https://github.com/user-attachments/assets/b604e3c9-152b-4a44-927a-a6e8767a5279" /><img width="1728" height="1539" alt="image" src="https://github.com/user-attachments/assets/64a44030-ccce-4034-9b35-e951a15ff5d0" />
+<img width="1909" height="1624" alt="image" src="https://github.com/user-attachments/assets/4a98db38-902b-4143-b184-63a6c833fb4a" />
+<img width="1728" height="1539" alt="image" src="https://github.com/user-attachments/assets/64a44030-ccce-4034-9b35-e951a15ff5d0" />
 
 
 
