@@ -3,8 +3,6 @@
 # YouTube Screenshot Extractor - Setup and Launch Script
 # For macOS and Linux
 
-set -e
-
 # Colors for terminal output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -314,8 +312,8 @@ install_ffmpeg() {
     echo ""
     echo "  FFmpeg is REQUIRED for:"
     echo "    - Keyframe extraction (--method keyframes)"
-    echo "    - Scene detection (--method scene)"
-    echo "    - Post-processing filters (--deblock, --deband, etc.)"
+    echo "    - Post-processing filters (--gradfun, --deband)"
+    echo "    - Audio merging during YouTube downloads"
     echo ""
     echo "  The tool will work without FFmpeg for basic interval extraction,"
     echo "  but most features require it."
@@ -497,12 +495,8 @@ launch_gui() {
 
     source venv/bin/activate
 
-    # Launch GUI based on OS
-    if [[ "$OS" == "macos" ]]; then
-        pythonw youtube-screenshot-gui.py &
-    else
-        python youtube-screenshot-gui.py &
-    fi
+    # Launch GUI (python3 works on both macOS and Linux)
+    python3 youtube-screenshot-gui.py &
 
     print_message "$GREEN" "  GUI launched in the background."
     echo ""

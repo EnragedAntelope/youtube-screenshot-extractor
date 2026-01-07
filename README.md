@@ -21,22 +21,22 @@ Extract high-quality frames from YouTube videos, local video files, or any yt-dl
 ## Quick Start
 
 ### Windows
-**Double-click `START.bat`** and select:
+**Double-click `START.bat`** and use the menu:
 1. **Initial Setup** - First time only, creates environment and installs dependencies
-2. **Install Deno** - **Required for YouTube** (other sites work without it)
-3. **Install FFmpeg** - **Required for keyframes/filters**
-4. **Launch GUI** - Start the graphical interface
+3. **Install Deno** - **Required for YouTube** (other sites work without it)
+4. **Install FFmpeg** - **Required for keyframes and some filters**
+6. **Launch GUI** - Start the graphical interface
 
-The menu also offers yt-dlp updates and optional GPU support.
+The menu also offers yt-dlp updates (option 2) and optional GPU support (option 5).
 
 ### macOS / Linux
-**Run `./start.sh`** in terminal and select:
+**Run `./start.sh`** in terminal and use the menu:
 1. **Initial Setup** - First time only, creates environment and installs dependencies
-2. **Install Deno** - **Required for YouTube** (other sites work without it)
-3. **Install FFmpeg** - **Required for keyframes/filters**
-4. **Launch GUI** - Start the graphical interface
+3. **Install Deno** - **Required for YouTube** (other sites work without it)
+4. **Install FFmpeg** - **Required for keyframes and some filters**
+6. **Launch GUI** - Start the graphical interface
 
-The menu also offers yt-dlp updates and optional GPU support.
+The menu also offers yt-dlp updates (option 2) and optional GPU support (option 5).
 
 ## Requirements
 
@@ -45,10 +45,11 @@ The menu also offers yt-dlp updates and optional GPU support.
   - Windows: Use `START.bat` option 3, or `winget install DenoLand.Deno`
   - macOS: Use `./start.sh` option 3, or `brew install deno`
   - Linux: Use `./start.sh` option 3, or `curl -fsSL https://deno.land/install.sh | sh`
-- [FFmpeg](https://ffmpeg.org/download.html) - **Required for keyframes/filters**
+- [FFmpeg](https://ffmpeg.org/download.html) - **Required for keyframes, gradfun/deband filters, and audio merging**
   - Windows: Use `START.bat` option 4, or `winget install Gyan.FFmpeg`
   - macOS: Use `./start.sh` option 4, or `brew install ffmpeg`
   - Linux: Use `./start.sh` option 4, or `sudo apt install ffmpeg` (Ubuntu/Debian)
+  - Note: Scene detection and deblock filter work without FFmpeg
 - PyCUDA (optional) - for NVIDIA GPU acceleration
 
 **Important:** Keep yt-dlp updated regularly. Use startup script option 2, or run: `pip install --upgrade yt-dlp`

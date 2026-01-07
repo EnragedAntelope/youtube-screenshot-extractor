@@ -12,6 +12,17 @@ import os
 import threading
 
 
+def check_ffmpeg():
+    """Check if FFmpeg is available in the system PATH."""
+    try:
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                      creationflags=creationflags)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 class ToolTip:
     """Tooltip that appears on hover."""
 
@@ -108,6 +119,9 @@ class YouTubeScreenshotGUI:
         self.root.title("YouTube Screenshot Extractor")
         self.root.geometry("580x620")
         self.root.minsize(480, 400)
+
+        # Check FFmpeg availability at startup
+        self.ffmpeg_available = check_ffmpeg()
 
         # Track output window for reuse
         self.output_window = None
@@ -219,15 +233,18 @@ class YouTubeScreenshotGUI:
 
         # Methods with tooltips explaining performance implications
         method_info = [
-            ("Interval", "interval", "Extract frame every N seconds. Can be slow for long videos with short intervals."),
-            ("Keyframes", "keyframes", "Extract I-frames only. Fast, requires FFmpeg."),
-            ("Scene", "scene", "Detect scene changes. Best quality, moderate speed."),
-            ("All", "all", "Extract every frame. VERY slow and generates huge output - use with caution!"),
+            ("Interval", "interval", "Extract frame every N seconds. Can be slow for long videos with short intervals.", True),
+            ("Keyframes", "keyframes", "Extract I-frames only. Fast, requires FFmpeg.", self.ffmpeg_available),
+            ("Scene", "scene", "Detect scene changes. Best quality, moderate speed.", True),
+            ("All", "all", "Extract every frame. VERY slow and generates huge output - use with caution!", True),
         ]
-        for text, value, tooltip in method_info:
+        for text, value, tooltip, enabled in method_info:
             rb = ttk.Radiobutton(self.method_radio_frame, text=text, variable=self.method_var,
                                 value=value, command=self._on_method_change)
             rb.pack(side="left", padx=(0, 12))
+            if not enabled:
+                rb.configure(state="disabled")
+                tooltip = tooltip + " (FFmpeg not found - install via startup script option 4)"
             ToolTip(rb, tooltip)
 
         # Interval setting (hidden by default since scene is default method)
@@ -303,15 +320,25 @@ class YouTubeScreenshotGUI:
 
         gf_cb = ttk.Checkbutton(row3, text="Gradfun", variable=self.gradfun_var)
         gf_cb.pack(side="left", padx=(0, 8))
-        ToolTip(gf_cb, "Subtle color banding reduction.")
+        if self.ffmpeg_available:
+            ToolTip(gf_cb, "Subtle color banding reduction. Requires FFmpeg.")
+        else:
+            gf_cb.configure(state="disabled")
+            self.gradfun_var.set(False)
+            ToolTip(gf_cb, "Subtle color banding reduction. (FFmpeg not found - install via startup script option 4)")
 
         db_cb = ttk.Checkbutton(row3, text="Deblock", variable=self.deblock_var)
         db_cb.pack(side="left", padx=(0, 8))
-        ToolTip(db_cb, "Reduce compression artifacts.")
+        ToolTip(db_cb, "Reduce compression artifacts. Works without FFmpeg.")
 
         dband_cb = ttk.Checkbutton(row3, text="Deband", variable=self.deband_var)
         dband_cb.pack(side="left")
-        ToolTip(dband_cb, "Aggressive color banding reduction.")
+        if self.ffmpeg_available:
+            ToolTip(dband_cb, "Aggressive color banding reduction. Requires FFmpeg.")
+        else:
+            dband_cb.configure(state="disabled")
+            self.deband_var.set(False)
+            ToolTip(dband_cb, "Aggressive color banding reduction. (FFmpeg not found - install via startup script option 4)")
 
     def _create_action_section(self):
         frame = ttk.Frame(self.main_frame)

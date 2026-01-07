@@ -209,20 +209,24 @@ def detect_watermark(frame, threshold):
     return False
 
 def apply_filters(frame, gradfun, deblock, deband, verbose):
+    filters_failed = []
+
     if gradfun:
-        try:
-            frame = apply_ffmpeg_filter(frame, 'gradfun=1.2:8', verbose)
-        except subprocess.CalledProcessError:
-            if verbose:
-                print("Warning: Failed to apply gradfun filter. Ensure FFmpeg is installed and in your PATH.")
+        original_frame = frame.copy()
+        frame = apply_ffmpeg_filter(frame, 'gradfun=1.2:8', verbose)
+        if np.array_equal(original_frame, frame):
+            filters_failed.append('gradfun')
 
     if deblock:
         frame = cv2.fastNlMeansDenoisingColored(frame, None, 10, 10, 7, 21)
 
     if deband:
+        original_frame = frame.copy()
         frame = apply_ffmpeg_filter(frame, 'deband', verbose)
+        if np.array_equal(original_frame, frame):
+            filters_failed.append('deband')
 
-    return frame
+    return frame, filters_failed
 
 
 def apply_ffmpeg_filter(frame, filter_string, verbose):
@@ -316,8 +320,9 @@ def process_frame(args):
     watermark_detected = detect_watermarks and detect_watermark(frame, watermark_threshold)
     
     if quality_check and blur_check:
+        filters_failed = []
         if gradfun or deblock or deband:
-            frame = apply_filters(frame, gradfun, deblock, deband, verbose)
+            frame, filters_failed = apply_filters(frame, gradfun, deblock, deband, verbose)
         
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)
@@ -334,14 +339,16 @@ def process_frame(args):
         status = f"Saved frame {frame_filename}"
         if watermark_detected:
             status += " (Watermark detected)"
-        return status, True
+        if filters_failed:
+            status += f" (Filters failed: {', '.join(filters_failed)} - FFmpeg may not be installed)"
+        return status, True, filters_failed
     else:
         skip_reason = []
         if not quality_check:
             skip_reason.append("low quality")
         if not blur_check:
             skip_reason.append("too blurry")
-        return f"Skipped frame {count} due to: {' and '.join(skip_reason)} (Quality: {quality_score:.2f}, Blur: {laplacian_var:.2f})", False
+        return f"Skipped frame {count} due to: {' and '.join(skip_reason)} (Quality: {quality_score:.2f}, Blur: {laplacian_var:.2f})", False, []
 
 def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=12, blur_threshold=10, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, use_gpu=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
     if not os.path.exists(output_folder):
@@ -417,7 +424,8 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
     
     skipped_frames = 0
     saved_frames = 0
-    
+    all_filters_failed = set()  # Track which filters failed across all frames
+
     if resume:
         # Load progress from a file
         progress_file = os.path.join(output_folder, "progress.json")
@@ -433,14 +441,15 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
             with ThreadPoolExecutor() as executor:
                 future_to_frame = {executor.submit(process_frame, args): args for args in frames_to_process}
                 for future in as_completed(future_to_frame):
-                    result, saved = future.result()
+                    result, saved, filters_failed = future.result()
                     safe_print(result)
                     if saved:
                         saved_frames += 1
                     else:
                         skipped_frames += 1
+                    all_filters_failed.update(filters_failed)
                     pbar.update(1)
-                    
+
                     # Save progress
                     if resume:
                         progress = {
@@ -452,14 +461,15 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                             json.dump(progress, f)
         else:
             for args in frames_to_process:
-                result, saved = process_frame(args)
+                result, saved, filters_failed = process_frame(args)
                 safe_print(result)
                 if saved:
                     saved_frames += 1
                 else:
                     skipped_frames += 1
+                all_filters_failed.update(filters_failed)
                 pbar.update(1)
-                
+
                 # Save progress
                 if resume:
                     progress = {
@@ -469,8 +479,8 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                     }
                     with open(progress_file, "w") as f:
                         json.dump(progress, f)
-    
-    return len(frames_to_process), skipped_frames, saved_frames
+
+    return len(frames_to_process), skipped_frames, saved_frames, all_filters_failed
 
 def generate_thumbnail(output_folder):
     frames = [f for f in os.listdir(output_folder) if f.endswith('.jpg') or f.endswith('.png')]
@@ -614,7 +624,11 @@ Note:
         parser.error("Interval must be greater than 0.")
 
     if args.method == 'keyframes':
-        check_ffmpeg()
+        if not check_ffmpeg():
+            print("Error: The 'keyframes' method requires FFmpeg.")
+            print("Please install FFmpeg from https://ffmpeg.org/download.html")
+            print("Or use the startup script option 4 to install it.")
+            sys.exit(1)
 
     if args.use_gpu:
         try:
@@ -673,33 +687,44 @@ Note:
     
     if not args.dry_run:
         start_time = time.time()
-        total_frames, skipped_frames, saved_frames = extract_frames(
-            video_path, output_folder, args.method, args.interval, args.quality, 
-            args.blur, args.detect_watermarks, args.watermark_threshold, 
-            not args.disable_parallel, args.png, args.use_gpu, args.fast_scene, 
+        total_frames, skipped_frames, saved_frames, filters_failed = extract_frames(
+            video_path, output_folder, args.method, args.interval, args.quality,
+            args.blur, args.detect_watermarks, args.watermark_threshold,
+            not args.disable_parallel, args.png, args.use_gpu, args.fast_scene,
             args.resume, args.verbose, args.gradfun, args.deblock, args.deband
         )
         end_time = time.time()
-        
+
         execution_time = end_time - start_time
         frames_per_second = total_frames / execution_time if execution_time > 0 else 0
-        
+
         print(f"\nFrame extraction complete.")
         print(f"Total execution time: {execution_time:.2f} seconds")
         print(f"Processed {total_frames} frames.")
         print(f"{saved_frames} high-quality frames saved!")
         print(f"{skipped_frames} frames skipped due to low-quality and/or blur.")
         print(f"Processing speed: {frames_per_second:.2f} frames/second")
-        
+
         # Add information about post-processing filters
         if args.gradfun or args.deblock or args.deband:
-            print("Post-processing filters applied:")
+            print("Post-processing filters:")
             if args.gradfun:
-                print("  - Gradfun filter (reduces color banding)")
+                if 'gradfun' in filters_failed:
+                    print("  - Gradfun filter: FAILED (FFmpeg not found or filter error)")
+                else:
+                    print("  - Gradfun filter: applied successfully")
             if args.deblock:
-                print("  - Deblocking filter (reduces compression artifacts)")
+                print("  - Deblocking filter: applied successfully")
             if args.deband:
-                print("  - Debanding filter (reduces color banding)")
+                if 'deband' in filters_failed:
+                    print("  - Debanding filter: FAILED (FFmpeg not found or filter error)")
+                else:
+                    print("  - Debanding filter: applied successfully")
+
+            if filters_failed:
+                print("\nWARNING: Some FFmpeg-based filters could not be applied.")
+                print("Install FFmpeg for full filter support: https://ffmpeg.org/download.html")
+                print("Or use the startup script option 4 to install it.")
         
         if args.thumbnail:
             generate_thumbnail(output_folder)

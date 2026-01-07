@@ -230,8 +230,8 @@ echo  ================================================================
 echo.
 echo  FFmpeg is REQUIRED for:
 echo    - Keyframe extraction (--method keyframes)
-echo    - Scene detection (--method scene)
-echo    - Post-processing filters (--deblock, --deband, etc.)
+echo    - Post-processing filters (--gradfun, --deband)
+echo    - Audio merging during YouTube downloads
 echo.
 echo  The tool will work without FFmpeg for basic interval extraction,
 echo  but most features require it.
@@ -387,7 +387,7 @@ if not exist "venv" (
 )
 
 call venv\Scripts\activate.bat
-start "" pythonw youtube-screenshot-gui.py
+start "" venv\Scripts\pythonw.exe youtube-screenshot-gui.py
 echo  GUI launched in a new window.
 echo.
 timeout /t 2 >nul
