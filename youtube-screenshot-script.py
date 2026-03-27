@@ -158,6 +158,14 @@ def download_video(url, output_path, max_resolution=None, verbose=False):
             elif 'Private video' in error_msg or 'Sign in' in error_msg:
                 safe_print("Error: This video is private or requires authentication.")
                 raise
+            elif any(k in error_msg for k in ('jsinterp', 'JavaScript', 'js interpreter', 'Deno', 'deno', 'external player')):
+                safe_print("Error: A JavaScript runtime is required for YouTube downloads.")
+                safe_print("Install Deno and ensure it is in your PATH:")
+                safe_print("  Windows: winget install DenoLand.Deno  (or use START.bat option 3)")
+                safe_print("  macOS:   brew install deno             (or use start.sh option 3)")
+                safe_print("  Linux:   curl -fsSL https://deno.land/install.sh | sh")
+                safe_print("Also ensure yt-dlp is up to date: pip install --upgrade \"yt-dlp[default]\"")
+                raise
             else:
                 if attempt < max_retries - 1:
                     safe_print(f"Download attempt {attempt + 1} failed. Retrying...")

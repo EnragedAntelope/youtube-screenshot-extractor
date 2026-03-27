@@ -196,9 +196,9 @@ update_ytdlp() {
     echo ""
 
     if command -v uv &> /dev/null; then
-        uv pip install --upgrade yt-dlp
+        uv pip install --upgrade "yt-dlp[default]"
     else
-        pip install --upgrade yt-dlp
+        pip install --upgrade "yt-dlp[default]"
     fi
 
     echo ""
