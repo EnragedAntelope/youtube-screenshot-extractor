@@ -150,7 +150,7 @@ if not exist "venv" (
 call venv\Scripts\activate.bat
 echo  Checking for yt-dlp updates...
 echo.
-uv pip install --upgrade yt-dlp 2>nul || pip install --upgrade yt-dlp
+uv pip install --upgrade "yt-dlp[default]" 2>nul || pip install --upgrade "yt-dlp[default]"
 echo.
 echo  yt-dlp has been updated to the latest version.
 echo.

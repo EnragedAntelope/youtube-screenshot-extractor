@@ -53,7 +53,7 @@ The menu also offers yt-dlp updates (option 2) and optional GPU support (option 
   - Note: Scene detection and deblock filter work without FFmpeg
 - PyCUDA (optional) - for NVIDIA GPU acceleration
 
-**Important:** Keep yt-dlp updated regularly. Use startup script option 2, or run: `pip install --upgrade yt-dlp`
+**Important:** Keep yt-dlp updated regularly — YouTube compatibility breaks frequently. Use startup script option 2, or run: `pip install --upgrade "yt-dlp[default]"`
 
 ## Manual Installation
 
@@ -66,6 +66,9 @@ cd youtube-screenshot-extractor
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
+
+# Keep yt-dlp current (run periodically for YouTube compatibility)
+pip install --upgrade "yt-dlp[default]"
 
 # Install Deno (required for YouTube)
 winget install DenoLand.Deno
@@ -81,6 +84,9 @@ cd youtube-screenshot-extractor
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# Keep yt-dlp current (run periodically for YouTube compatibility)
+pip install --upgrade "yt-dlp[default]"
 
 # Install Deno (required for YouTube)
 # macOS:
@@ -162,8 +168,8 @@ Frames are saved as: `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`
 
 | Problem | Solution |
 |---------|----------|
-| YouTube download fails | Install Deno (required since Nov 2025):<br>Windows: `winget install DenoLand.Deno`<br>macOS: `brew install deno`<br>Linux: `curl -fsSL https://deno.land/install.sh \| sh` |
-| Authentication/download errors | Update yt-dlp: `pip install --upgrade yt-dlp` |
+| YouTube download fails | 1. Update yt-dlp: `pip install --upgrade "yt-dlp[default]"`<br>2. Install/update Deno (required):<br>Windows: `winget install DenoLand.Deno`<br>macOS: `brew install deno`<br>Linux: `curl -fsSL https://deno.land/install.sh \| sh` |
+| Authentication/download errors | Update yt-dlp: `pip install --upgrade "yt-dlp[default]"` |
 | "Format not available" error | Remove resolution limit or try a different source - some sites have limited formats |
 | No frames extracted | Lower thresholds: `--quality 20 --blur 30` |
 | Keyframe extraction fails | Ensure FFmpeg is installed and in PATH |
