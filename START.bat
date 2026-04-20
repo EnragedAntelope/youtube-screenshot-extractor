@@ -422,6 +422,12 @@ echo.
 echo   Local file with scene detection:
 echo     python youtube-screenshot-script.py video.mp4 --method scene
 echo.
+echo   YouTube with authentication (for age-restricted/PO Token videos):
+echo     python youtube-screenshot-script.py "URL" --cookies-from-browser firefox
+echo.
+echo   Avoid rate limiting (add delay between requests):
+echo     python youtube-screenshot-script.py "URL" --sleep-requests 5
+echo.
 pause
 goto menu
 

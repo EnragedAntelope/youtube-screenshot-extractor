@@ -50,6 +50,55 @@ def sanitize_filename(filename):
     return re.sub(r'[^\w\-_.]', '_', filename)
 
 
+def clean_youtube_url(url):
+    """Extract just the video ID from YouTube URLs, stripping playlist and other params.
+    
+    This prevents yt-dlp from trying to download entire playlists when the user
+    only wants a single video. YouTube URLs often include ?list=PLAYLIST_ID which
+    causes yt-dlp to iterate through all videos in the playlist.
+    
+    Args:
+        url: YouTube URL (may contain playlist parameters)
+        
+    Returns:
+        Clean URL with only the video ID
+        
+    Examples:
+        >>> clean_youtube_url('https://youtu.be/VIDEO_ID?list=PLAYLIST')
+        'https://youtu.be/VIDEO_ID'
+        >>> clean_youtube_url('https://youtube.com/watch?v=VIDEO_ID&list=PLAYLIST')
+        'https://youtube.com/watch?v=VIDEO_ID'
+    """
+    if not url or not isinstance(url, str):
+        return url
+    
+    # Handle youtu.be short URLs
+    if 'youtu.be' in url:
+        # Extract video ID from path (everything after youtu.be/)
+        match = re.search(r'youtu\.be/([a-zA-Z0-9_-]{11})', url)
+        if match:
+            video_id = match.group(1)
+            return f'https://youtu.be/{video_id}'
+    
+    # Handle standard youtube.com/watch URLs
+    if 'youtube.com' in url or 'youtube.com' in url:
+        # Extract video ID from v= parameter
+        match = re.search(r'[?&]v=([a-zA-Z0-9_-]{11})', url)
+        if match:
+            video_id = match.group(1)
+            return f'https://www.youtube.com/watch?v={video_id}'
+    
+    # Handle youtube.com/embed URLs
+    if 'youtube.com/embed' in url:
+        match = re.search(r'youtube\.com/embed/([a-zA-Z0-9_-]{11})', url)
+        if match:
+            video_id = match.group(1)
+            return f'https://www.youtube.com/watch?v={video_id}'
+    
+    # Return original if we couldn't parse it
+    return url
+
+
 def sanitize_output_path(path):
     """Sanitize an output path while preserving directory structure.
 
@@ -104,7 +153,7 @@ def safe_print(text):
         print(text.encode('ascii', 'replace').decode('ascii'))
 
 
-def download_video(url, output_path, max_resolution=None, verbose=False):
+def download_video(url, output_path, max_resolution=None, verbose=False, cookies_from_browser=None, cookies_file=None, sleep_requests=0, extractor_args=None):
     # Build format string with fallbacks for better compatibility
     if max_resolution:
         # Try requested resolution, fall back to best available if not found
@@ -123,6 +172,28 @@ def download_video(url, output_path, max_resolution=None, verbose=False):
         'no_warnings': not verbose,
         'progress': verbose,
     }
+
+    # Add cookie authentication if provided
+    if cookies_from_browser:
+        ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
+        if verbose:
+            safe_print(f"Using cookies from browser: {cookies_from_browser}")
+    elif cookies_file:
+        ydl_opts['cookies'] = cookies_file
+        if verbose:
+            safe_print(f"Using cookies from file: {cookies_file}")
+
+    # Add rate limiting to avoid bans
+    if sleep_requests > 0:
+        ydl_opts['sleep_requests'] = sleep_requests
+        if verbose:
+            safe_print(f"Rate limiting enabled: {sleep_requests} seconds between requests")
+
+    # Add extractor arguments (e.g., for PO Tokens)
+    if extractor_args:
+        ydl_opts['extractor_args'] = extractor_args
+        if verbose:
+            safe_print(f"Using extractor arguments: {extractor_args}")
 
     if not check_ffmpeg():
         safe_print("Warning: FFmpeg is not installed. Downloading video only without merging audio.")
@@ -154,9 +225,28 @@ def download_video(url, output_path, max_resolution=None, verbose=False):
             elif '403' in error_msg or 'Forbidden' in error_msg:
                 if attempt < max_retries - 1:
                     safe_print(f"Download attempt {attempt + 1} failed (rate limited). Retrying...")
+                    # Add exponential backoff
+                    import time
+                    time.sleep(2 ** attempt)
                     continue
+                else:
+                    safe_print("\n" + "="*70)
+                    safe_print("ERROR: YouTube is blocking this request (HTTP 403)")
+                    safe_print("="*70)
+                    safe_print("\nThis usually means one of the following:")
+                    safe_print("1. YouTube requires a PO Token for this video")
+                    safe_print("2. Your IP has been rate limited")
+                    safe_print("3. The video requires authentication (age-restricted, private, etc.)")
+                    safe_print("\nSolutions:")
+                    safe_print("- For PO Token issues: Use --cookies-from-browser firefox/chrome")
+                    safe_print("- For rate limiting: Use --sleep-requests 5 (adds delay between requests)")
+                    safe_print("- For private videos: Use --cookies-from-browser with an authenticated browser")
+                    safe_print("- Update yt-dlp: pip install --upgrade 'yt-dlp[default]'")
+                    safe_print("="*70 + "\n")
+                    raise
             elif 'Private video' in error_msg or 'Sign in' in error_msg:
                 safe_print("Error: This video is private or requires authentication.")
+                safe_print("Use --cookies-from-browser firefox (or chrome) to access private videos.")
                 raise
             elif any(k in error_msg for k in ('jsinterp', 'JavaScript', 'js interpreter', 'Deno', 'deno', 'external player')):
                 safe_print("Error: A JavaScript runtime is required for YouTube downloads.")
@@ -165,6 +255,18 @@ def download_video(url, output_path, max_resolution=None, verbose=False):
                 safe_print("  macOS:   brew install deno             (or use start.sh option 3)")
                 safe_print("  Linux:   curl -fsSL https://deno.land/install.sh | sh")
                 safe_print("Also ensure yt-dlp is up to date: pip install --upgrade \"yt-dlp[default]\"")
+                raise
+            elif 'po_token' in error_msg.lower() or 'po token' in error_msg.lower():
+                safe_print("\n" + "="*70)
+                safe_print("ERROR: This video requires a PO Token")
+                safe_print("="*70)
+                safe_print("\nYouTube now requires PO Tokens for many videos.")
+                safe_print("To fix this, use browser cookies:")
+                safe_print("  --cookies-from-browser firefox")
+                safe_print("  or")
+                safe_print("  --cookies-from-browser chrome")
+                safe_print("\nMake sure you are logged into YouTube in that browser.")
+                safe_print("="*70 + "\n")
                 raise
             else:
                 if attempt < max_retries - 1:
@@ -436,10 +538,10 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         except subprocess.CalledProcessError as e:
             print(f"Error during keyframe extraction: {e.stderr.decode() if e.stderr else 'Unknown error'}")
             video.release()
-            return 0, 0, 0
+            return 0, 0, 0, set()
         video.release()
         print("Keyframe extraction complete.")
-        return total_frames, 0, total_frames
+        return total_frames, 0, total_frames, set()
     elif method == 'scene':
         try:
             from scenedetect import detect, ContentDetector
@@ -595,28 +697,41 @@ Example: frame_000001_q85_b120_watermarked.png
          This is frame 1, with a quality score of 85, blur score of 120, a detected watermark, saved as PNG.
 
 Usage Examples:
-  1. Extract frames every 5 seconds from a YouTube video:
-     python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
+   1. Extract frames every 5 seconds from a YouTube video:
+      python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
-  2. Extract keyframes from a local video file:
-     python youtube-screenshot-script.py path/to/your/video.mp4 --method keyframes
+   2. Extract keyframes from a local video file:
+      python youtube-screenshot-script.py path/to/your/video.mp4 --method keyframes
 
-  3. Use scene detection on a YouTube video with custom output folder:
-     python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --method scene --output my_scene_shots
+   3. Use scene detection on a YouTube video with custom output folder:
+      python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --method scene --output my_scene_shots
 
-  4. Download a YouTube video at 720p and extract frames:
-     python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --max-resolution 720
+   4. Download a YouTube video at 720p and extract frames:
+      python youtube-screenshot-script.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --max-resolution 720
+
+   5. Extract from age-restricted video using browser cookies:
+      python youtube-screenshot-script.py "URL" --cookies-from-browser firefox
+
+   6. Avoid rate limiting when processing multiple videos:
+      python youtube-screenshot-script.py "URL" --sleep-requests 5
 
 Post-processing Filters:
-  --gradfun: Apply gradfun filter to reduce color banding (less aggressive, preserves more detail)
-  --deblock: Apply deblocking filter to reduce compression artifacts
-  --deband: Apply debanding filter to reduce color banding (more aggressive, better for severe banding)
+   --gradfun: Apply gradfun filter to reduce color banding (less aggressive, preserves more detail)
+   --deblock: Apply deblocking filter to reduce compression artifacts
+   --deband: Apply debanding filter to reduce color banding (more aggressive, better for severe banding)
+
+YouTube Authentication (for age-restricted, private, or PO Token-required videos):
+   --cookies-from-browser BROWSER: Use cookies from browser (firefox, chrome, edge, etc.)
+   --cookies FILE: Use cookies from Netscape format file
+   --sleep-requests SECONDS: Add delay between requests to avoid rate limiting
+   --extractor-args ARGS: Additional yt-dlp extractor arguments (e.g., 'youtube:player_client=mweb')
 
 Note: 
 - Using filters may significantly increase processing time.
 - Choose between gradfun and deband based on your needs:
-  - Use gradfun for subtle banding issues or to preserve more detail.
-  - Use deband for more severe banding problems, especially in dark scenes or sky gradients.
+   - Use gradfun for subtle banding issues or to preserve more detail.
+   - Use deband for more severe banding problems, especially in dark scenes or sky gradients.
+- YouTube now requires PO Tokens for many videos. Use --cookies-from-browser for best results.
 """
     )
     parser.add_argument("source", help="YouTube video URL or path to local video file")
@@ -657,6 +772,16 @@ Note:
     parser.add_argument("--gradfun", action="store_true", help="Apply gradfun filter to reduce color banding (less aggressive, preserves more detail)")
     parser.add_argument("--deblock", action="store_true", help="Apply deblocking filter")
     parser.add_argument("--deband", action="store_true", help="Apply debanding filter to reduce color banding (more aggressive, better for severe banding)")
+    
+    # YouTube authentication and rate limiting options
+    parser.add_argument("--cookies-from-browser", type=str, metavar='BROWSER',
+                        help="Load cookies from a browser. Use 'firefox' or 'chrome'. Required for age-restricted videos and helps with PO Token issues.")
+    parser.add_argument("--cookies", type=str, metavar='FILE',
+                        help="Path to a cookies file (Netscape format) for YouTube authentication")
+    parser.add_argument("--sleep-requests", type=int, default=0, metavar='SECONDS',
+                        help="Add a delay (in seconds) between requests to avoid rate limiting. Recommended: 3-5 for multiple videos.")
+    parser.add_argument("--extractor-args", type=str, metavar='ARGS',
+                        help="Additional extractor arguments for yt-dlp (e.g., 'youtube:player_client=mweb'). See yt-dlp documentation.")
 
     args = parser.parse_args()
 
@@ -701,7 +826,30 @@ Note:
     
     if args.source.startswith(('http://', 'https://', 'www.')):
         video_path = f"downloaded_video_{timestamp}.mp4"
-        video_title = download_video(args.source, video_path, args.max_resolution, args.verbose)
+        
+        # Clean URL - remove playlist params that cause wrong video extraction
+        cleaned_url = clean_youtube_url(args.source)
+        if cleaned_url != args.source:
+            safe_print(f"Note: Stripped playlist parameters from URL")
+            safe_print(f"  Original: {args.source}")
+            safe_print(f"  Cleaned:  {cleaned_url}")
+        
+        # Parse extractor_args if provided
+        extractor_args_dict = None
+        if args.extractor_args:
+            # Parse key=value pairs separated by semicolons
+            extractor_args_dict = {}
+            for pair in args.extractor_args.split(';'):
+                if ':' in pair:
+                    key, value = pair.split(':', 1)
+                    extractor_args_dict[key.strip()] = value.strip()
+        video_title = download_video(
+            cleaned_url, video_path, args.max_resolution, args.verbose,
+            cookies_from_browser=args.cookies_from_browser,
+            cookies_file=args.cookies,
+            sleep_requests=args.sleep_requests,
+            extractor_args=extractor_args_dict
+        )
         sanitized_title = sanitize_filename(video_title)
     else:
         # It's a local file
@@ -739,6 +887,16 @@ Note:
             print("  - Deblocking filter")
         if args.deband:
             print("  - Debanding filter")
+    
+    # Print authentication/rate limiting info
+    if args.cookies_from_browser:
+        print(f"Using cookies from browser: {args.cookies_from_browser}")
+    elif args.cookies:
+        print(f"Using cookies from file: {args.cookies}")
+    if args.sleep_requests > 0:
+        print(f"Rate limiting: {args.sleep_requests}s delay between requests")
+    if args.extractor_args:
+        print(f"Extractor arguments: {args.extractor_args}")
     
     if not args.dry_run:
         start_time = time.time()

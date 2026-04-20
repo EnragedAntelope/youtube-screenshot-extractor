@@ -18,6 +18,8 @@ Extract high-quality frames from YouTube videos, local video files, or any yt-dl
 - Resume interrupted extractions
 - Post-processing filters (gradfun, deblock, deband)
 - **GUI and command-line interfaces**
+- **YouTube authentication support** (cookies for age-restricted/private videos)
+- **Rate limiting protection** (avoid IP bans when processing multiple videos)
 
 ## Quick Start
 
@@ -122,6 +124,12 @@ python youtube-screenshot-script.py video.mp4 --method keyframes
 
 # Optimal quality extraction with filters
 python youtube-screenshot-script.py video.mp4 --quality 50 --blur 100 --detect-watermarks --deblock --thumbnail
+
+# Extract from age-restricted video (requires authentication)
+python youtube-screenshot-script.py "YOUTUBE_URL" --cookies-from-browser firefox
+
+# Process multiple videos with rate limiting to avoid bans
+python youtube-screenshot-script.py "URL" --sleep-requests 5
 ```
 
 ## Options
@@ -132,7 +140,7 @@ python youtube-screenshot-script.py video.mp4 --quality 50 --blur 100 --detect-w
 | `--interval` | Seconds between frames (interval method only) | 5.0 |
 | `--quality` | Quality threshold 0-100 (higher = stricter) | 12.0 |
 | `--blur` | Blur threshold (higher = less blur allowed) | 10.0 |
-| `--max-resolution` | Limit download resolution (e.g., 720, 1080) | best |
+| `--max-resolution` | Limit download quality (e.g., 720, 1080) | best |
 | `--output` | Custom output folder name | auto |
 | `--png` | Save as PNG instead of JPG | JPG |
 | `--detect-watermarks` | Enable watermark detection | off |
@@ -147,6 +155,10 @@ python youtube-screenshot-script.py video.mp4 --quality 50 --blur 100 --detect-w
 | `--gradfun` | Reduce color banding (subtle) | off |
 | `--deblock` | Reduce compression artifacts | off |
 | `--deband` | Reduce color banding (aggressive) | off |
+| `--cookies-from-browser` | Use cookies from browser (firefox, chrome, etc.) | none |
+| `--cookies` | Path to cookies file (Netscape format) | none |
+| `--sleep-requests` | Delay in seconds between requests | 0 |
+| `--extractor-args` | Additional yt-dlp extractor arguments | none |
 
 ## Output
 
@@ -160,16 +172,54 @@ Frames are saved as: `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`
 
 - **Speed**: `keyframes` is fastest. `scene` finds natural cuts. `interval` and `all` can be very slow.
 - **Quality tuning**: Start with `--quality 30 --blur 50` and adjust based on results.
-- **Large videos**: Use `--resume` and `--max-resolution 1080` to manage long processes and avoid rate limiting.
+- **Large videos**: Use `--resume` and `--max-resolution 1080` to manage long processes.
+- **YouTube authentication**: Always use `--cookies-from-browser firefox` for best results with YouTube.
+- **Avoiding rate limits**: Use `--sleep-requests 5` when processing multiple videos in a batch.
 - **Filters**: Use `--gradfun` for subtle banding, `--deband` for severe banding. Filters increase processing time.
 - **Other sites**: Most of the 1000+ sites yt-dlp supports will work. Some may not support all resolution options.
+
+## YouTube Authentication Guide
+
+### Using Browser Cookies (Recommended)
+
+For the best experience with YouTube videos, use browser cookies:
+
+1. **Login to YouTube** in your browser (Firefox recommended on Windows)
+2. **Run the tool with authentication**:
+   ```bash
+   python youtube-screenshot-script.py "YOUTUBE_URL" --cookies-from-browser firefox
+   ```
+
+3. **For age-restricted videos**, you must be logged into a YouTube account in that browser
+
+### Rate Limiting Best Practices
+
+YouTube enforces rate limits to prevent abuse:
+- **Guest users**: ~300 videos/hour
+- **Authenticated users**: ~2000 videos/hour
+
+To avoid hitting these limits:
+
+1. **Use rate limiting**: `--sleep-requests 5` adds a 5-second delay between requests
+2. **Download at lower resolutions**: `--max-resolution 720` downloads faster
+3. **Process in batches**: Don't queue hundreds of videos at once
+
+### Security Considerations
+
+⚠️ **Warning**: Using your YouTube account with yt-dlp carries a small risk of account restrictions. To minimize risk:
+
+- Use a throwaway/secondary YouTube account for downloading
+- Don't download excessive amounts (stay under rate limits)
+- Keep yt-dlp updated to ensure you're using the latest, safest methods
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| YouTube download fails | 1. Update yt-dlp: `pip install --upgrade "yt-dlp[default]"`<br>2. Install/update Deno (required):<br>Windows: `winget install DenoLand.Deno`<br>macOS: `brew install deno`<br>Linux: `curl -fsSL https://deno.land/install.sh \| sh` |
-| Authentication/download errors | Update yt-dlp: `pip install --upgrade "yt-dlp[default]"` |
+| YouTube download fails | 1. Update yt-dlp: `pip install --upgrade "yt-dlp[default]"`<br>2. Use `--cookies-from-browser firefox` for PO Token issues<br>3. Install/update Deno (required):<br>Windows: `winget install DenoLand.Deno`<br>macOS: `brew install deno`<br>Linux: `curl -fsSL https://deno.land/install.sh \| sh` |
+| HTTP 403 / "Forbidden" error | YouTube requires authentication. Use `--cookies-from-browser firefox` or `--cookies-from-browser chrome` |
+| Age-restricted video fails | Use `--cookies-from-browser firefox` (must be logged into YouTube in that browser) |
+| Rate limiting / "This content isn't available" | Add delay between requests: `--sleep-requests 5` and use `--max-resolution 720` |
 | "Format not available" error | Remove resolution limit or try a different source - some sites have limited formats |
 | No frames extracted | Lower thresholds: `--quality 20 --blur 30` |
 | Keyframe extraction fails | Ensure FFmpeg is installed and in PATH |
@@ -177,6 +227,36 @@ Frames are saved as: `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`
 | GPU not working | Verify CUDA and PyCUDA installation, or remove `--use-gpu` |
 | False watermark positives | Increase threshold: `--watermark-threshold 0.9` |
 | Process dies on large videos | Use `--resume`, check disk space |
+
+### Understanding YouTube PO Tokens
+
+YouTube has implemented **PO (Proof of Origin) Tokens** as an anti-bot measure. Without proper authentication, you may encounter HTTP 403 errors when downloading videos.
+
+**What this means for you:**
+- Many YouTube videos now require browser cookies to download
+- Age-restricted and private videos always require authentication
+- Rate limits are enforced: ~300 videos/hour for guests, ~2000 for authenticated users
+
+**Solutions:**
+
+1. **For most videos**: Use `--cookies-from-browser firefox` (or `chrome`, `edge`)
+   - You must be logged into YouTube in that browser
+   - Firefox is recommended on Windows (Chrome encrypts cookies)
+
+2. **For age-restricted/private videos**: 
+   - Use `--cookies-from-browser firefox` with a browser where you're logged into YouTube
+   - Consider using a throwaway account to avoid risking your main account
+
+3. **To avoid rate limiting**:
+   - Use `--sleep-requests 5` to add a 5-second delay between requests
+   - Use `--max-resolution 720` to download smaller files (faster, less likely to trigger limits)
+   - Process videos in smaller batches
+
+4. **Keep yt-dlp updated**:
+   ```bash
+   pip install --upgrade "yt-dlp[default]"
+   ```
+   YouTube changes their systems frequently, and yt-dlp updates regularly to keep up.
 
 ## GPU Acceleration (Optional)
 

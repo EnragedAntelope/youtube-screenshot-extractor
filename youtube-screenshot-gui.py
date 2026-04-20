@@ -152,6 +152,7 @@ class YouTubeScreenshotGUI:
         self._create_method_section()
         self._create_quality_section()
         self._create_options_section()
+        self._create_youtube_auth_section()
         self._create_action_section()
         self._create_status_bar()
 
@@ -176,6 +177,10 @@ class YouTubeScreenshotGUI:
         self.gradfun_var = tk.BooleanVar(value=False)
         self.deblock_var = tk.BooleanVar(value=True)
         self.deband_var = tk.BooleanVar(value=False)
+        # YouTube authentication options
+        self.cookies_from_browser_var = tk.StringVar(value="")
+        self.cookies_file_var = tk.StringVar(value="")
+        self.sleep_requests_var = tk.IntVar(value=0)
 
     def _create_section_header(self, parent, text):
         frame = ttk.Frame(parent)
@@ -340,6 +345,28 @@ class YouTubeScreenshotGUI:
             self.deband_var.set(False)
             ToolTip(dband_cb, "Aggressive color banding reduction. (FFmpeg not found - install via startup script option 4)")
 
+    def _create_youtube_auth_section(self):
+        """Create YouTube authentication and rate limiting section."""
+        self._create_section_header(self.main_frame, "YouTube Authentication (Optional)")
+
+        # Cookies from browser row
+        browser_frame = ttk.Frame(self.main_frame)
+        browser_frame.pack(fill="x", pady=2)
+        ttk.Label(browser_frame, text="Browser Cookies:").pack(side="left")
+        browser_combo = ttk.Combobox(browser_frame, textvariable=self.cookies_from_browser_var,
+                                     values=["", "firefox", "chrome", "edge", "safari"],
+                                     width=10, state="readonly")
+        browser_combo.pack(side="left", padx=(4, 0))
+        ToolTip(browser_combo, "Select browser to use cookies from. Required for age-restricted videos and helps with PO Token issues. Leave empty if not needed.")
+
+        # Rate limiting row
+        rate_frame = ttk.Frame(self.main_frame)
+        rate_frame.pack(fill="x", pady=2)
+        ttk.Label(rate_frame, text="Rate Limit (s):").pack(side="left")
+        ttk.Spinbox(rate_frame, from_=0, to=60, increment=1,
+                    textvariable=self.sleep_requests_var, width=6).pack(side="left", padx=(4, 0))
+        ToolTip(rate_frame, "Delay between requests (seconds). Use 3-5 when processing multiple videos to avoid rate limiting. 0 = no delay.")
+
     def _create_action_section(self):
         frame = ttk.Frame(self.main_frame)
         frame.pack(fill="x", pady=(12, 4))
@@ -433,6 +460,15 @@ class YouTubeScreenshotGUI:
         if dry_run:
             cmd.append("--dry-run")
 
+        # Add YouTube authentication options
+        cookies_browser = self.cookies_from_browser_var.get()
+        if cookies_browser:
+            cmd.extend(["--cookies-from-browser", cookies_browser])
+
+        sleep_requests = self.sleep_requests_var.get()
+        if sleep_requests > 0:
+            cmd.extend(["--sleep-requests", str(sleep_requests)])
+
         return cmd
 
     def _run_command(self, cmd, dry_run=False):
@@ -440,32 +476,47 @@ class YouTubeScreenshotGUI:
             try:
                 self.status_var.set("Processing..." if not dry_run else "Dry run...")
                 script_dir = os.path.dirname(os.path.abspath(__file__))
+                
+                # Show output window immediately in main thread
+                self.root.after(0, lambda: self._create_output_window(dry_run, cmd))
+                
+                # Create process with unbuffered output
+                env = os.environ.copy()
+                env['PYTHONUNBUFFERED'] = '1'
+                
                 process = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, cwd=script_dir,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                    text=True, cwd=script_dir, env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                    bufsize=1  # Line buffered
                 )
-                self.root.after(0, lambda: self._show_output_window(process, dry_run))
+                
+                # Start reading output
+                self.root.after(0, lambda: self._start_output_reader(process, dry_run))
             except Exception as e:
                 self.status_var.set("Error")
                 self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
 
         threading.Thread(target=run, daemon=True).start()
-
-    def _show_output_window(self, process, dry_run=False):
+    
+    def _create_output_window(self, dry_run=False, cmd=None):
+        """Create or reuse the output window."""
         # Reuse existing window if it exists and is still open
         if self.output_window is not None and self.output_window.winfo_exists():
             # Add separator for new run
             self._append_output(self.output_text, "\n" + "="*60 + "\n")
             self._append_output(self.output_text, f"{'Dry Run' if dry_run else 'New Extraction'} Started\n")
             self._append_output(self.output_text, "="*60 + "\n\n")
+            if cmd:
+                self._append_output(self.output_text, f"Command: {' '.join(cmd[:5])}...\n")
+                self._append_output(self.output_text, f"Full command: {' '.join(cmd)}\n\n")
             self._append_output(self.output_text, "Processing... please wait.\n\n")
             self.output_window.lift()  # Bring to front
         else:
             # Create new window
             self.output_window = tk.Toplevel(self.root)
             self.output_window.title("Output")
-            self.output_window.geometry("650x350")
+            self.output_window.geometry("800x500")
             self.output_window.transient(self.root)
 
             text_frame = ttk.Frame(self.output_window)
@@ -494,21 +545,29 @@ class YouTubeScreenshotGUI:
 
             ttk.Button(self.output_window, text="Close", command=on_close).pack(pady=6)
 
-            # Initial message
+            # Initial message with command info
+            if cmd:
+                self._append_output(self.output_text, f"Command: {' '.join(cmd[:5])}...\n")
+                self._append_output(self.output_text, f"Full command: {' '.join(cmd)}\n\n")
             self._append_output(self.output_text, "Processing... please wait.\n\n")
-
+    
+    def _start_output_reader(self, process, dry_run=False):
+        """Start the output reading thread."""
         def read_output():
             try:
-                for line in process.stdout:
-                    if self.output_text:
+                for line in iter(process.stdout.readline, ''):
+                    if not line:
+                        break
+                    if self.output_text and self.output_text.winfo_exists():
                         self.root.after(0, lambda l=line: self._append_output(self.output_text, l))
+                
                 process.wait()
                 status = "Complete!" if process.returncode == 0 else f"Exit code: {process.returncode}"
                 self.root.after(0, lambda: self.status_var.set(status))
-                if self.output_text:
+                if self.output_text and self.output_text.winfo_exists():
                     self.root.after(0, lambda: self._append_output(self.output_text, f"\n--- {status} ---\n"))
             except Exception as e:
-                if self.output_text:
+                if self.output_text and self.output_text.winfo_exists():
                     self.root.after(0, lambda: self._append_output(self.output_text, f"\nError: {e}\n"))
 
         threading.Thread(target=read_output, daemon=True).start()
