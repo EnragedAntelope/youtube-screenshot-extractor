@@ -4,11 +4,12 @@ import os
 import argparse
 from datetime import datetime
 import re
+import glob
 from PIL import Image
 import shlex
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import json
 from tqdm import tqdm
 import time
@@ -52,49 +53,43 @@ def sanitize_filename(filename):
 
 def clean_youtube_url(url):
     """Extract just the video ID from YouTube URLs, stripping playlist and other params.
-    
+
     This prevents yt-dlp from trying to download entire playlists when the user
     only wants a single video. YouTube URLs often include ?list=PLAYLIST_ID which
     causes yt-dlp to iterate through all videos in the playlist.
-    
+
     Args:
         url: YouTube URL (may contain playlist parameters)
-        
+
     Returns:
         Clean URL with only the video ID
-        
+
     Examples:
         >>> clean_youtube_url('https://youtu.be/VIDEO_ID?list=PLAYLIST')
         'https://youtu.be/VIDEO_ID'
         >>> clean_youtube_url('https://youtube.com/watch?v=VIDEO_ID&list=PLAYLIST')
-        'https://youtube.com/watch?v=VIDEO_ID'
+        'https://www.youtube.com/watch?v=VIDEO_ID'
     """
     if not url or not isinstance(url, str):
         return url
-    
+
     # Handle youtu.be short URLs
     if 'youtu.be' in url:
-        # Extract video ID from path (everything after youtu.be/)
         match = re.search(r'youtu\.be/([a-zA-Z0-9_-]{11})', url)
         if match:
-            video_id = match.group(1)
-            return f'https://youtu.be/{video_id}'
-    
-    # Handle standard youtube.com/watch URLs
-    if 'youtube.com' in url or 'youtube.com' in url:
-        # Extract video ID from v= parameter
+            return f'https://youtu.be/{match.group(1)}'
+
+    if 'youtube.com' in url:
+        # Standard watch URLs: extract video ID from v= parameter
         match = re.search(r'[?&]v=([a-zA-Z0-9_-]{11})', url)
         if match:
-            video_id = match.group(1)
-            return f'https://www.youtube.com/watch?v={video_id}'
-    
-    # Handle youtube.com/embed URLs
-    if 'youtube.com/embed' in url:
-        match = re.search(r'youtube\.com/embed/([a-zA-Z0-9_-]{11})', url)
+            return f'https://www.youtube.com/watch?v={match.group(1)}'
+
+        # Shorts, live, and embed URLs
+        match = re.search(r'youtube\.com/(?:shorts|live|embed)/([a-zA-Z0-9_-]{11})', url)
         if match:
-            video_id = match.group(1)
-            return f'https://www.youtube.com/watch?v={video_id}'
-    
+            return f'https://www.youtube.com/watch?v={match.group(1)}'
+
     # Return original if we couldn't parse it
     return url
 
@@ -153,8 +148,9 @@ def safe_print(text):
         print(text.encode('ascii', 'replace').decode('ascii'))
 
 
-def download_video(url, output_path, max_resolution=None, verbose=False, cookies_from_browser=None, cookies_file=None, sleep_requests=0, extractor_args=None):
-    # Build format string with fallbacks for better compatibility
+def build_ydl_opts(output_path, max_resolution=None, verbose=False, cookies_from_browser=None,
+                   cookies_file=None, sleep_requests=0, extractor_args=None):
+    """Build the yt-dlp options dict shared by download and dry-run info fetch."""
     if max_resolution:
         # Try requested resolution, fall back to best available if not found
         format_str = (
@@ -170,7 +166,7 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
         'merge_output_format': 'mp4',
         'quiet': not verbose,
         'no_warnings': not verbose,
-        'progress': verbose,
+        'noprogress': not verbose,
     }
 
     # Add cookie authentication if provided
@@ -179,13 +175,13 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
         if verbose:
             safe_print(f"Using cookies from browser: {cookies_from_browser}")
     elif cookies_file:
-        ydl_opts['cookies'] = cookies_file
+        ydl_opts['cookiefile'] = cookies_file
         if verbose:
             safe_print(f"Using cookies from file: {cookies_file}")
 
     # Add rate limiting to avoid bans
     if sleep_requests > 0:
-        ydl_opts['sleep_requests'] = sleep_requests
+        ydl_opts['sleep_interval_requests'] = sleep_requests
         if verbose:
             safe_print(f"Rate limiting enabled: {sleep_requests} seconds between requests")
 
@@ -199,6 +195,22 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
         safe_print("Warning: FFmpeg is not installed. Downloading video only without merging audio.")
         ydl_opts['format'] = 'bestvideo/best'
         ydl_opts['postprocessors'] = []
+
+    return ydl_opts
+
+
+def get_video_info(url, **kwargs):
+    """Fetch video metadata without downloading (used by --dry-run)."""
+    ydl_opts = build_ydl_opts('%(title)s.%(ext)s', **kwargs)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+def download_video(url, output_path, max_resolution=None, verbose=False, cookies_from_browser=None, cookies_file=None, sleep_requests=0, extractor_args=None):
+    ydl_opts = build_ydl_opts(
+        output_path, max_resolution, verbose,
+        cookies_from_browser, cookies_file, sleep_requests, extractor_args
+    )
 
     max_retries = 3
     last_error = None
@@ -226,7 +238,6 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
                 if attempt < max_retries - 1:
                     safe_print(f"Download attempt {attempt + 1} failed (rate limited). Retrying...")
                     # Add exponential backoff
-                    import time
                     time.sleep(2 ** attempt)
                     continue
                 else:
@@ -286,61 +297,51 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
 
 def calculate_quality_score(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
+
     # Sharpness using Laplacian variance
     laplacian = cv2.Laplacian(gray, cv2.CV_64F)
     sharpness = np.var(laplacian)
     sharpness_norm = min(max(sharpness / 1000, 0), 1.0)
-    
+
     # Edge strength using Sobel
     sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     edge_strength = np.mean(np.sqrt(sobelx**2 + sobely**2))
     edge_strength_norm = min(max(edge_strength / 100, 0), 1.0)
-    
+
     # Contrast and Brightness
     contrast = np.std(gray) / (np.mean(gray) + 1e-6)  # Add small epsilon to avoid division by zero
     brightness = np.mean(gray) / 255
-    
+
     # Advanced metrics
     entropy = cv2.calcHist([gray], [0], None, [256], [0, 256])
     entropy = entropy / (np.sum(entropy) + 1e-6)  # Normalize and avoid division by zero
     entropy = -np.sum(entropy * np.log2(entropy + 1e-7))
     entropy_norm = min(max(entropy / 8, 0), 1.0)  # 8 is max entropy for 8-bit image
-    
+
     # Calculate weighted score
     score = (sharpness_norm * 0.3 + edge_strength_norm * 0.2 + contrast * 0.2 + brightness * 0.1 + entropy_norm * 0.2) * 100
     return max(min(score, 100), 0)  # Ensure the score is between 0 and 100
 
-def is_black(pixel, threshold=10):
-    return all(value < threshold for value in pixel[:3])
+def remove_black_bars(frame, threshold=10):
+    """Crop black letterbox/pillarbox bars from a BGR frame.
 
-def remove_black_bars(image):
-    width, height = image.size
-    pixels = image.load()
+    A row/column is considered a bar only if every pixel in it is darker
+    than the threshold. Returns the frame unchanged if it is entirely black.
+    """
+    black_mask = (frame[:, :, :3] < threshold).all(axis=2)
 
-    # Find top
-    top = 0
-    while top < height and all(is_black(pixels[x, top]) for x in range(width)):
-        top += 1
+    content_rows = np.where(~black_mask.all(axis=1))[0]
+    if content_rows.size == 0:
+        return frame  # Entirely black frame - nothing to crop
+    top, bottom = content_rows[0], content_rows[-1]
 
-    # Find bottom
-    bottom = height - 1
-    while bottom > top and all(is_black(pixels[x, bottom]) for x in range(width)):
-        bottom -= 1
+    content_cols = np.where(~black_mask[top:bottom + 1].all(axis=0))[0]
+    if content_cols.size == 0:
+        return frame
+    left, right = content_cols[0], content_cols[-1]
 
-    # Find left
-    left = 0
-    while left < width and all(is_black(pixels[left, y]) for y in range(top, bottom + 1)):
-        left += 1
-
-    # Find right
-    right = width - 1
-    while right > left and all(is_black(pixels[right, y]) for y in range(top, bottom + 1)):
-        right -= 1
-
-    # Crop the image
-    return image.crop((left, top, right + 1, bottom + 1))
+    return frame[top:bottom + 1, left:right + 1]
 
 def detect_watermark(frame, threshold):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -348,21 +349,21 @@ def detect_watermark(frame, threshold):
     kernel = np.ones((5,5), np.uint8)
     dilated = cv2.dilate(edges, kernel, iterations=2)
     contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
         if h == 0 or w == 0:
             continue
         aspect_ratio = float(w) / h
         fill_ratio = cv2.contourArea(contour) / (w * h)
-        
+
         if 0.5 < aspect_ratio < 2 and fill_ratio > threshold:
             if (x < frame.shape[1] * 0.2 and y < frame.shape[0] * 0.2) or \
                (x > frame.shape[1] * 0.8 and y < frame.shape[0] * 0.2) or \
                (x < frame.shape[1] * 0.2 and y > frame.shape[0] * 0.8) or \
                (x > frame.shape[1] * 0.8 and y > frame.shape[0] * 0.8):
                 return True
-    
+
     return False
 
 def apply_filters(frame, gradfun, deblock, deband, verbose):
@@ -402,7 +403,8 @@ def apply_ffmpeg_filter(frame, filter_string, verbose):
         try:
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True,
                           creationflags=_get_subprocess_flags())
-            return cv2.imread(temp_out_name)
+            result = cv2.imread(temp_out_name)
+            return result if result is not None else frame
         except subprocess.CalledProcessError as e:
             if verbose:
                 print(f"Error running FFmpeg command: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
@@ -421,78 +423,30 @@ def apply_ffmpeg_filter(frame, filter_string, verbose):
             os.unlink(temp_out_name)
 
 def process_frame(args):
-    frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu, gradfun, deblock, deband, verbose = args
-    
-    if use_gpu:
-        try:
-            import pycuda.driver as cuda
-            import pycuda.autoinit
-            from pycuda.compiler import SourceModule
+    frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, gradfun, deblock, deband, verbose = args
 
-            # GPU processing code
-            cuda_code = """
-            __global__ void process_image(unsigned char *d_image, int width, int height)
-            {
-                int idx = threadIdx.x + blockIdx.x * blockDim.x;
-                int idy = threadIdx.y + blockIdx.y * blockDim.y;
-                if (idx < width && idy < height)
-                {
-                    int offset = (idy * width + idx) * 3;
-                    for (int i = 0; i < 3; i++)
-                    {
-                        float pixel_value = d_image[offset + i];
-                        pixel_value = min(255.0f, pixel_value * 1.2f);
-                        d_image[offset + i] = (unsigned char)pixel_value;
-                    }
-                }
-            }
-            """
-            mod = SourceModule(cuda_code)
-            process_image = mod.get_function("process_image")
-            
-            d_frame = cuda.mem_alloc(frame.nbytes)
-            cuda.memcpy_htod(d_frame, frame)
-            process_image(
-                d_frame,
-                np.int32(frame.shape[1]),
-                np.int32(frame.shape[0]),
-                block=(16, 16, 1),
-                grid=((frame.shape[1] + 15) // 16, (frame.shape[0] + 15) // 16)
-            )
-            cuda.memcpy_dtoh(frame, d_frame)
-        except Exception as e:
-            if verbose:
-                print(f"GPU processing failed: {e}. Falling back to CPU processing.")
-            use_gpu = False
-    
-    if not use_gpu:
-        # CPU processing (original processing logic)
-        pass  # Your original CPU processing code goes here
-    
     quality_score = calculate_quality_score(frame)
     laplacian_var = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-    
+
     quality_check = quality_score >= quality_threshold
     blur_check = laplacian_var >= blur_threshold
     watermark_detected = detect_watermarks and detect_watermark(frame, watermark_threshold)
-    
+
     if quality_check and blur_check:
         filters_failed = []
         if gradfun or deblock or deband:
             frame, filters_failed = apply_filters(frame, gradfun, deblock, deband, verbose)
-        
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_frame)
-        pil_image = remove_black_bars(pil_image)
-        
+
+        frame = remove_black_bars(frame)
+
         filename = f"frame_{count:06d}_q{int(quality_score):02d}_b{int(laplacian_var):02d}"
         if watermark_detected:
             filename += "_watermarked"
         filename += ".png" if use_png else ".jpg"
-        
+
         frame_filename = os.path.join(output_folder, filename)
-        cv2.imwrite(frame_filename, cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR))
-        
+        cv2.imwrite(frame_filename, frame)
+
         status = f"Saved frame {frame_filename}"
         if watermark_detected:
             status += " (Watermark detected)"
@@ -507,27 +461,45 @@ def process_frame(args):
             skip_reason.append("too blurry")
         return f"Skipped frame {count} due to: {' and '.join(skip_reason)} (Quality: {quality_score:.2f}, Blur: {laplacian_var:.2f})", False, []
 
-def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=12, blur_threshold=10, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, use_gpu=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-    
-    video = cv2.VideoCapture(video_path)
-    if not video.isOpened():
-        print(f"Error: Unable to open video file: {video_path}")
+def detect_scene_frames(video_path, fast_scene=False, verbose=False):
+    """Run scene detection and return the list of scene-start frame numbers.
+
+    Uses the SceneManager API directly so fast mode can skip frames during
+    detection (roughly 3x faster, slightly less accurate cut placement).
+    """
+    try:
+        from scenedetect import open_video, SceneManager, ContentDetector
+    except ImportError:
+        print("Error: The 'scene' method requires the scenedetect library.")
+        print("Please install it manually using:")
+        print("pip install scenedetect")
         sys.exit(1)
-    fps = video.get(cv2.CAP_PROP_FPS)
-    total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    if method == 'interval':
-        frame_interval = int(fps * interval_seconds)
-    elif method == 'all':
-        frame_interval = 1
-    elif method == 'keyframes':
-        check_ffmpeg()
+
+    video_stream = open_video(video_path)
+    scene_manager = SceneManager()
+    scene_manager.add_detector(ContentDetector())
+    scene_manager.detect_scenes(
+        video_stream,
+        frame_skip=2 if fast_scene else 0,
+        show_progress=verbose,
+    )
+    scene_list = scene_manager.get_scene_list()
+    if not scene_list:
+        # Video with no detected cuts (single continuous shot) - treat the
+        # whole video as one scene so at least one frame is extracted.
+        safe_print("No scene changes detected; treating the video as a single scene.")
+        return [0]
+    return [scene[0].frame_num for scene in scene_list]
+
+
+def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=12, blur_threshold=10, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
+    os.makedirs(output_folder, exist_ok=True)
+
+    if method == 'keyframes':
         output_pattern = os.path.join(output_folder, "keyframe_%03d.jpg")
         ffmpeg_command = [
             "ffmpeg", "-i", video_path,
-            "-vf", "select='eq(pict_type,PICT_TYPE_I)',scale=in_range=full:out_range=tv,zscale=t=linear:npl=100:m=bt709:r=tv,format=yuv420p",
+            "-vf", "select='eq(pict_type,PICT_TYPE_I)'",
             "-fps_mode", "vfr",
             "-q:v", "2",
             output_pattern
@@ -537,107 +509,147 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                           creationflags=_get_subprocess_flags())
         except subprocess.CalledProcessError as e:
             print(f"Error during keyframe extraction: {e.stderr.decode() if e.stderr else 'Unknown error'}")
-            video.release()
             return 0, 0, 0, set()
-        video.release()
+        saved = len(glob.glob(os.path.join(output_folder, "keyframe_*.jpg")))
         print("Keyframe extraction complete.")
-        return total_frames, 0, total_frames, set()
-    elif method == 'scene':
+        return saved, 0, saved, set()
+
+    scene_frame_numbers = None
+    if method == 'scene':
         try:
-            from scenedetect import detect, ContentDetector
-        except ImportError:
-            print("Error: The 'scene' method requires the scenedetect library.")
-            print("Please install it manually using:")
-            print("pip install scenedetect")
-            sys.exit(1)
-        
-        try:
-            scene_list = detect(video_path, ContentDetector(), fast_scene)
-        except TypeError as e:
+            scene_frame_numbers = detect_scene_frames(video_path, fast_scene, verbose)
+        except Exception as e:
             print(f"Warning: Error during scene detection: {e}")
             print("Falling back to interval-based extraction.")
             method = 'interval'
-            frame_interval = int(fps * interval_seconds)
-        else:
-            frames_to_process = []
-            for i, scene in enumerate(scene_list):
-                frame_number = scene[0].frame_num
+
+    video = cv2.VideoCapture(video_path)
+    if not video.isOpened():
+        print(f"Error: Unable to open video file: {video_path}")
+        sys.exit(1)
+
+    fps = video.get(cv2.CAP_PROP_FPS)
+    if not fps or fps <= 0:
+        safe_print("Warning: Could not determine video FPS. Assuming 30 fps for interval calculation.")
+        fps = 30.0
+    total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    frame_step = 1 if method == 'all' else max(1, int(round(fps * interval_seconds)))
+
+    # Estimated number of frames that will be processed (for the progress bar).
+    if scene_frame_numbers is not None:
+        expected_total = len(scene_frame_numbers)
+    elif total_frames > 0:
+        expected_total = (total_frames + frame_step - 1) // frame_step
+    else:
+        expected_total = None  # Unknown length (e.g., some streams)
+
+    def frame_generator():
+        """Yield (frame, count) one at a time so memory stays bounded."""
+        if scene_frame_numbers is not None:
+            for i, frame_number in enumerate(scene_frame_numbers):
                 video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
                 ret, frame = video.read()
                 if ret:
-                    frames_to_process.append((frame, output_folder, i, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu, gradfun, deblock, deband, verbose))
-            
-            video.release()
-            
-    if method != 'scene' or 'frames_to_process' not in locals():
-        frames_to_process = []
-        for frame_number in range(0, total_frames, frame_interval):
-            video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-            ret, frame = video.read()
-            if ret:
-                frames_to_process.append((frame, output_folder, frame_number // frame_interval, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, use_gpu, gradfun, deblock, deband, verbose))
-        
-        video.release()
-    
+                    yield frame, i
+        else:
+            # Sequential read with grab() to skip undecoded frames quickly
+            frame_number = 0
+            count = 0
+            while True:
+                ret = video.grab()
+                if not ret:
+                    break
+                if frame_number % frame_step == 0:
+                    ret, frame = video.retrieve()
+                    if ret:
+                        yield frame, count
+                        count += 1
+                frame_number += 1
+
     skipped_frames = 0
     saved_frames = 0
+    processed_frames = 0
+    start_at = 0
     all_filters_failed = set()  # Track which filters failed across all frames
+    progress_file = os.path.join(output_folder, "progress.json")
 
-    if resume:
-        # Load progress from a file
-        progress_file = os.path.join(output_folder, "progress.json")
-        if os.path.exists(progress_file):
-            with open(progress_file, "r") as f:
-                progress = json.load(f)
-            skipped_frames = progress["skipped_frames"]
-            saved_frames = progress["saved_frames"]
-            frames_to_process = frames_to_process[progress["processed_frames"]:]
-    
-    with tqdm(total=len(frames_to_process), disable=not verbose) as pbar:
-        if use_parallel:
-            with ThreadPoolExecutor() as executor:
-                future_to_frame = {executor.submit(process_frame, args): args for args in frames_to_process}
-                for future in as_completed(future_to_frame):
-                    result, saved, filters_failed = future.result()
-                    safe_print(result)
-                    if saved:
-                        saved_frames += 1
-                    else:
-                        skipped_frames += 1
-                    all_filters_failed.update(filters_failed)
-                    pbar.update(1)
+    if resume and os.path.exists(progress_file):
+        with open(progress_file, "r") as f:
+            progress = json.load(f)
+        start_at = progress.get("processed_frames", 0)
+        skipped_frames = progress.get("skipped_frames", 0)
+        saved_frames = progress.get("saved_frames", 0)
+        processed_frames = start_at
+        safe_print(f"Resuming: skipping first {start_at} already-processed frames.")
 
-                    # Save progress
-                    if resume:
-                        progress = {
-                            "processed_frames": len(frames_to_process) - len(future_to_frame),
-                            "skipped_frames": skipped_frames,
-                            "saved_frames": saved_frames
-                        }
-                        with open(progress_file, "w") as f:
-                            json.dump(progress, f)
+    def save_progress():
+        if resume:
+            with open(progress_file, "w") as f:
+                json.dump({
+                    "processed_frames": processed_frames,
+                    "skipped_frames": skipped_frames,
+                    "saved_frames": saved_frames,
+                }, f)
+
+    def handle_result(future_or_result):
+        nonlocal saved_frames, skipped_frames, processed_frames
+        try:
+            result, saved, filters_failed = (
+                future_or_result.result() if hasattr(future_or_result, 'result') else future_or_result
+            )
+        except Exception as e:
+            safe_print(f"Error processing frame: {e}")
+            skipped_frames += 1
+            processed_frames += 1
+            return
+        safe_print(result)
+        if saved:
+            saved_frames += 1
         else:
-            for args in frames_to_process:
-                result, saved, filters_failed = process_frame(args)
-                safe_print(result)
-                if saved:
-                    saved_frames += 1
-                else:
-                    skipped_frames += 1
-                all_filters_failed.update(filters_failed)
+            skipped_frames += 1
+        processed_frames += 1
+        all_filters_failed.update(filters_failed)
+        save_progress()
+
+    with tqdm(total=expected_total, disable=not verbose) as pbar:
+        if use_parallel:
+            max_in_flight = (os.cpu_count() or 4) * 2
+            with ThreadPoolExecutor() as executor:
+                in_flight = set()
+                for frame, count in frame_generator():
+                    if count < start_at:
+                        continue
+                    task_args = (frame, output_folder, count, quality_threshold, blur_threshold,
+                                 detect_watermarks, watermark_threshold, use_png,
+                                 gradfun, deblock, deband, verbose)
+                    in_flight.add(executor.submit(process_frame, task_args))
+                    if len(in_flight) >= max_in_flight:
+                        done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            handle_result(future)
+                            pbar.update(1)
+                for future in as_completed(in_flight):
+                    handle_result(future)
+                    pbar.update(1)
+        else:
+            for frame, count in frame_generator():
+                if count < start_at:
+                    continue
+                task_args = (frame, output_folder, count, quality_threshold, blur_threshold,
+                             detect_watermarks, watermark_threshold, use_png,
+                             gradfun, deblock, deband, verbose)
+                handle_result(process_frame(task_args))
                 pbar.update(1)
 
-                # Save progress
-                if resume:
-                    progress = {
-                        "processed_frames": frames_to_process.index(args) + 1,
-                        "skipped_frames": skipped_frames,
-                        "saved_frames": saved_frames
-                    }
-                    with open(progress_file, "w") as f:
-                        json.dump(progress, f)
+    video.release()
 
-    return len(frames_to_process), skipped_frames, saved_frames, all_filters_failed
+    # Extraction finished successfully - remove the progress file so a future
+    # --resume run doesn't skip frames of a new extraction.
+    if resume and os.path.exists(progress_file):
+        os.unlink(progress_file)
+
+    return processed_frames, skipped_frames, saved_frames, all_filters_failed
 
 def generate_thumbnail(output_folder):
     frames = [f for f in os.listdir(output_folder) if f.endswith('.jpg') or f.endswith('.png')]
@@ -679,7 +691,7 @@ def main():
         print("Warning: FFmpeg is not installed. Some features may be limited.")
         print("For full functionality, please install FFmpeg:")
         print("https://ffmpeg.org/download.html")
-    
+
     parser = argparse.ArgumentParser(
         description="Extract high-quality screenshots from YouTube videos or local video files.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -726,7 +738,7 @@ YouTube Authentication (for age-restricted, private, or PO Token-required videos
    --sleep-requests SECONDS: Add delay between requests to avoid rate limiting
    --extractor-args ARGS: Additional yt-dlp extractor arguments (e.g., 'youtube:player_client=mweb')
 
-Note: 
+Note:
 - Using filters may significantly increase processing time.
 - Choose between gradfun and deband based on your needs:
    - Use gradfun for subtle banding issues or to preserve more detail.
@@ -737,42 +749,42 @@ Note:
     parser.add_argument("source", help="YouTube video URL or path to local video file")
     parser.add_argument("--method", choices=['interval', 'all', 'keyframes', 'scene'], default='interval',
                         help="Frame extraction method (default: interval)")
-    parser.add_argument("--interval", type=float, default=5.0, 
+    parser.add_argument("--interval", type=float, default=5.0,
                         help="Interval between frames in seconds (default: 5.0, only used with 'interval' method)")
-    parser.add_argument("--quality", type=float, default=12.0, 
+    parser.add_argument("--quality", type=float, default=12.0,
                         help="Quality threshold for frame selection (0-100, default: 12.0)")
-    parser.add_argument("--blur", type=float, default=10.0, 
+    parser.add_argument("--blur", type=float, default=10.0,
                         help="Blur threshold for frame selection (default: 10.0)")
-    parser.add_argument("--detect-watermarks", action="store_true", 
+    parser.add_argument("--detect-watermarks", action="store_true",
                         help="Enable basic watermark detection")
-    parser.add_argument("--watermark-threshold", type=float, default=0.8, 
+    parser.add_argument("--watermark-threshold", type=float, default=0.8,
                         help="Watermark detection sensitivity (0-1, default: 0.8)")
-    parser.add_argument("--max-resolution", type=int, 
+    parser.add_argument("--max-resolution", type=int,
                     help="Maximum resolution for YouTube video download (e.g., 720, 1080). Ignored for local files.")
-    parser.add_argument("--output", type=str, default=None, 
+    parser.add_argument("--output", type=str, default=None,
                         help="Custom output folder name")
-    parser.add_argument("--png", action="store_true", 
+    parser.add_argument("--png", action="store_true",
                         help="Save frames as PNG instead of JPG")
-    parser.add_argument("--disable-parallel", action="store_true", 
+    parser.add_argument("--disable-parallel", action="store_true",
                         help="Disable parallel processing of frames")
-    parser.add_argument("--use-gpu", action="store_true", 
-                        help="Use GPU acceleration if available")
-    parser.add_argument("--fast-scene", action="store_true", 
+    parser.add_argument("--use-gpu", action="store_true",
+                        help=argparse.SUPPRESS)  # Deprecated: kept for backwards compatibility, has no effect
+    parser.add_argument("--fast-scene", action="store_true",
                         help="Use fast mode for scene detection (less accurate results)")
-    parser.add_argument("--resume", action="store_true", 
+    parser.add_argument("--resume", action="store_true",
                         help="Resume an interrupted extraction process")
-    parser.add_argument("--thumbnail", action="store_true", 
+    parser.add_argument("--thumbnail", action="store_true",
                         help="Generate a thumbnail montage of extracted frames")
-    parser.add_argument("--verbose", action="store_true", 
+    parser.add_argument("--verbose", action="store_true",
                         help="Enable detailed logging")
-    parser.add_argument("--dry-run", action="store_true", 
+    parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be done without actually processing")
-    parser.add_argument("--config", type=str, 
+    parser.add_argument("--config", type=str,
                     help="Load settings from a JSON configuration file")
     parser.add_argument("--gradfun", action="store_true", help="Apply gradfun filter to reduce color banding (less aggressive, preserves more detail)")
     parser.add_argument("--deblock", action="store_true", help="Apply deblocking filter")
     parser.add_argument("--deband", action="store_true", help="Apply debanding filter to reduce color banding (more aggressive, better for severe banding)")
-    
+
     # YouTube authentication and rate limiting options
     parser.add_argument("--cookies-from-browser", type=str, metavar='BROWSER',
                         help="Load cookies from a browser. Use 'firefox' or 'chrome'. Required for age-restricted videos and helps with PO Token issues.")
@@ -793,15 +805,18 @@ Note:
 
     if args.quality < 0 or args.quality > 100:
         parser.error("Quality threshold must be between 0 and 100.")
-    
+
     if args.blur < 0 or args.blur > 1000:
         parser.error("Blur threshold must be between 0 and 1000.")
-    
+
     if args.watermark_threshold < 0 or args.watermark_threshold > 1:
         parser.error("Watermark threshold must be between 0 and 1.")
-    
+
     if args.interval <= 0:
         parser.error("Interval must be greater than 0.")
+
+    if args.cookies and not os.path.isfile(args.cookies):
+        parser.error(f"Cookies file not found: {args.cookies}")
 
     if args.method == 'keyframes':
         if not check_ffmpeg():
@@ -811,57 +826,67 @@ Note:
             sys.exit(1)
 
     if args.use_gpu:
-        try:
-            import pycuda.driver as cuda
-            import pycuda.autoinit
-            print("GPU acceleration is available.")
-        except ImportError:
-            print("Warning: PyCUDA is not installed. GPU acceleration is not available.")
-            print("To use GPU acceleration, please install PyCUDA:")
-            print("pip install pycuda>=2022.1")
-            print("Falling back to CPU processing.")
-            args.use_gpu = False
+        print("Note: --use-gpu is deprecated and has no effect. CPU processing is used.")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    if args.source.startswith(('http://', 'https://', 'www.')):
+
+    # Parse extractor_args if provided (key:value pairs separated by semicolons)
+    extractor_args_dict = None
+    if args.extractor_args:
+        extractor_args_dict = {}
+        for pair in args.extractor_args.split(';'):
+            if ':' in pair:
+                key, value = pair.split(':', 1)
+                extractor_args_dict[key.strip()] = value.strip()
+
+    is_url = args.source.startswith(('http://', 'https://', 'www.'))
+
+    if is_url:
         video_path = f"downloaded_video_{timestamp}.mp4"
-        
+
         # Clean URL - remove playlist params that cause wrong video extraction
         cleaned_url = clean_youtube_url(args.source)
         if cleaned_url != args.source:
             safe_print(f"Note: Stripped playlist parameters from URL")
             safe_print(f"  Original: {args.source}")
             safe_print(f"  Cleaned:  {cleaned_url}")
-        
-        # Parse extractor_args if provided
-        extractor_args_dict = None
-        if args.extractor_args:
-            # Parse key=value pairs separated by semicolons
-            extractor_args_dict = {}
-            for pair in args.extractor_args.split(';'):
-                if ':' in pair:
-                    key, value = pair.split(':', 1)
-                    extractor_args_dict[key.strip()] = value.strip()
-        video_title = download_video(
-            cleaned_url, video_path, args.max_resolution, args.verbose,
-            cookies_from_browser=args.cookies_from_browser,
-            cookies_file=args.cookies,
-            sleep_requests=args.sleep_requests,
-            extractor_args=extractor_args_dict
-        )
+
+        if args.dry_run:
+            # Fetch metadata only - do not download the video during a dry run
+            safe_print("Dry run: fetching video info (no download)...")
+            info = get_video_info(
+                cleaned_url, max_resolution=args.max_resolution, verbose=args.verbose,
+                cookies_from_browser=args.cookies_from_browser, cookies_file=args.cookies,
+                sleep_requests=args.sleep_requests, extractor_args=extractor_args_dict
+            )
+            video_title = info.get('title', 'Unknown')
+            duration = info.get('duration')
+            safe_print(f"Video found: {video_title}")
+            if duration:
+                safe_print(f"Duration: {int(duration // 60)}m {int(duration % 60)}s")
+        else:
+            video_title = download_video(
+                cleaned_url, video_path, args.max_resolution, args.verbose,
+                cookies_from_browser=args.cookies_from_browser,
+                cookies_file=args.cookies,
+                sleep_requests=args.sleep_requests,
+                extractor_args=extractor_args_dict
+            )
         sanitized_title = sanitize_filename(video_title)
     else:
         # It's a local file
         video_path = args.source
+        if not os.path.isfile(video_path):
+            print(f"Error: Video file not found: {video_path}")
+            sys.exit(1)
         video_title = os.path.splitext(os.path.basename(video_path))[0]
         sanitized_title = sanitize_filename(video_title)
-    
+
     if args.output:
         output_folder = sanitize_output_path(args.output)
     else:
         output_folder = f"screenshots_{sanitized_title}_{timestamp}"
-    
+
     safe_print(f"Video source: {video_path}")
     safe_print(f"Extracting frames to: {output_folder}")
     print(f"Extraction method: {args.method}")
@@ -869,8 +894,6 @@ Note:
     print(f"Blur threshold set to {args.blur:.1f} (Higher values allow less blur)")
     if args.detect_watermarks:
         print(f"Watermark detection enabled with threshold {args.watermark_threshold:.2f}")
-    if args.use_gpu:
-        print("GPU acceleration enabled")
     if args.fast_scene:
         print("Fast scene detection mode enabled")
     if args.resume:
@@ -887,7 +910,7 @@ Note:
             print("  - Deblocking filter")
         if args.deband:
             print("  - Debanding filter")
-    
+
     # Print authentication/rate limiting info
     if args.cookies_from_browser:
         print(f"Using cookies from browser: {args.cookies_from_browser}")
@@ -897,13 +920,13 @@ Note:
         print(f"Rate limiting: {args.sleep_requests}s delay between requests")
     if args.extractor_args:
         print(f"Extractor arguments: {args.extractor_args}")
-    
+
     if not args.dry_run:
         start_time = time.time()
         total_frames, skipped_frames, saved_frames, filters_failed = extract_frames(
             video_path, output_folder, args.method, args.interval, args.quality,
             args.blur, args.detect_watermarks, args.watermark_threshold,
-            not args.disable_parallel, args.png, args.use_gpu, args.fast_scene,
+            not args.disable_parallel, args.png, args.fast_scene,
             args.resume, args.verbose, args.gradfun, args.deblock, args.deband
         )
         end_time = time.time()
@@ -938,11 +961,11 @@ Note:
                 print("\nWARNING: Some FFmpeg-based filters could not be applied.")
                 print("Install FFmpeg for full filter support: https://ffmpeg.org/download.html")
                 print("Or use the startup script option 4 to install it.")
-        
+
         if args.thumbnail:
             generate_thumbnail(output_folder)
     else:
-        print("Dry run completed. No frames were actually processed.")
+        print("Dry run completed. No video was downloaded and no frames were processed.")
 
 if __name__ == "__main__":
     main()

@@ -22,27 +22,23 @@ echo.
 echo   [4] Install FFmpeg - REQUIRED for keyframes/filters
 echo       Media processing tool needed for advanced features
 echo.
-echo   [5] Install GPU Support - optional, rarely needed
-echo       PyCUDA for NVIDIA GPU - modern CPUs are usually fast enough
-echo.
-echo   [6] Launch GUI
+echo   [5] Launch GUI
 echo       Start the graphical interface
 echo.
-echo   [7] Launch Command Line Help
+echo   [6] Launch Command Line Help
 echo       Show all command line options
 echo.
-echo   [8] Exit
+echo   [7] Exit
 echo.
-set /p choice="  Enter your choice [1-8]: "
+set /p choice="  Enter your choice [1-7]: "
 
 if "%choice%"=="1" goto setup
 if "%choice%"=="2" goto update_ytdlp
 if "%choice%"=="3" goto install_deno
 if "%choice%"=="4" goto install_ffmpeg
-if "%choice%"=="5" goto install_gpu
-if "%choice%"=="6" goto launch_gui
-if "%choice%"=="7" goto launch_help
-if "%choice%"=="8" goto end
+if "%choice%"=="5" goto launch_gui
+if "%choice%"=="6" goto launch_help
+if "%choice%"=="7" goto end
 
 echo.
 echo  Invalid choice. Please try again.
@@ -126,7 +122,7 @@ echo  IMPORTANT NEXT STEPS:
 echo  - Run option [3] to install Deno (required for YouTube)
 echo  - Run option [4] to install FFmpeg (required for keyframes/filters)
 echo.
-echo  Then use option [6] to launch the GUI.
+echo  Then use option [5] to launch the GUI.
 echo.
 pause
 goto menu
@@ -310,64 +306,6 @@ if "%ffmpeg_choice%"=="1" (
     echo  Installation skipped.
 )
 
-echo.
-pause
-goto menu
-
-:install_gpu
-cls
-echo.
-echo  ================================================================
-echo   GPU Support Installation - Optional
-echo  ================================================================
-echo.
-echo  This installs PyCUDA for NVIDIA GPU acceleration.
-echo.
-echo  WARNING: This install takes 5-10 minutes and downloads large
-echo  dependencies. Only recommended if processing many videos.
-echo.
-echo  REQUIREMENTS:
-echo    - NVIDIA GPU
-echo    - CUDA Toolkit - https://developer.nvidia.com/cuda-toolkit
-echo    - Visual Studio Build Tools
-echo.
-echo  Skip this if you don't have an NVIDIA GPU - the tool works
-echo  fine with CPU processing.
-echo.
-set /p confirm="  Proceed with installation? [y/n]: "
-if /i not "%confirm%"=="y" goto menu
-
-if not exist "venv" (
-    echo.
-    echo  ERROR: Virtual environment not found.
-    echo  Please run Initial Setup first - option 1.
-    echo.
-    pause
-    goto menu
-)
-
-call venv\Scripts\activate.bat
-echo.
-echo  Installing PyCUDA - this will take several minutes...
-echo.
-uv pip install pycuda 2>nul || pip install pycuda
-if errorlevel 1 (
-    echo.
-    echo  ================================================================
-    echo  PyCUDA installation failed.
-    echo.
-    echo  This is normal if you don't have:
-    echo    - An NVIDIA GPU
-    echo    - CUDA Toolkit installed
-    echo    - Visual Studio Build Tools
-    echo.
-    echo  The tool will work fine without GPU acceleration.
-    echo  ================================================================
-) else (
-    echo.
-    echo  PyCUDA installed successfully!
-    echo  GPU acceleration is now available.
-)
 echo.
 pause
 goto menu

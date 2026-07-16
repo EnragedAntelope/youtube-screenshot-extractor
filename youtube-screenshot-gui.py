@@ -164,8 +164,6 @@ class YouTubeScreenshotGUI:
         self.quality_var = tk.DoubleVar(value=50.0)
         self.blur_var = tk.DoubleVar(value=100.0)
         self.max_resolution_var = tk.StringVar(value="1080")  # Good balance of quality vs speed/rate limits
-        # GPU OFF by default - modern CPUs are fast enough for most use cases
-        self.use_gpu_var = tk.BooleanVar(value=False)
         self.parallel_var = tk.BooleanVar(value=True)
         self.detect_watermarks_var = tk.BooleanVar(value=True)
         self.watermark_threshold_var = tk.DoubleVar(value=0.8)
@@ -295,10 +293,6 @@ class YouTubeScreenshotGUI:
         # Row 1: Performance
         row1 = ttk.Frame(self.main_frame)
         row1.pack(fill="x", pady=2)
-        gpu_cb = ttk.Checkbutton(row1, text="GPU acceleration", variable=self.use_gpu_var)
-        gpu_cb.pack(side="left", padx=(0, 16))
-        ToolTip(gpu_cb, "Use NVIDIA GPU. Requires PyCUDA. Modern CPUs are usually fast enough - try without first.")
-
         par_cb = ttk.Checkbutton(row1, text="Parallel processing", variable=self.parallel_var)
         par_cb.pack(side="left")
         ToolTip(par_cb, "Process multiple frames simultaneously.")
@@ -359,6 +353,15 @@ class YouTubeScreenshotGUI:
         browser_combo.pack(side="left", padx=(4, 0))
         ToolTip(browser_combo, "Select browser to use cookies from. Required for age-restricted videos and helps with PO Token issues. Leave empty if not needed.")
 
+        # Cookies file row (alternative to browser cookies)
+        cfile_frame = ttk.Frame(self.main_frame)
+        cfile_frame.pack(fill="x", pady=2)
+        ttk.Label(cfile_frame, text="Cookies File:").pack(side="left")
+        cfile_entry = ttk.Entry(cfile_frame, textvariable=self.cookies_file_var)
+        cfile_entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        ToolTip(cfile_entry, "Path to a Netscape-format cookies file. Alternative to browser cookies - ignored if a browser is selected above.")
+        ttk.Button(cfile_frame, text="Browse", command=self._browse_cookies_file, width=8).pack(side="right")
+
         # Rate limiting row
         rate_frame = ttk.Frame(self.main_frame)
         rate_frame.pack(fill="x", pady=2)
@@ -410,6 +413,12 @@ class YouTubeScreenshotGUI:
         if folder:
             self.output_var.set(folder)
 
+    def _browse_cookies_file(self):
+        filetypes = [("Cookies files", "*.txt"), ("All files", "*.*")]
+        filename = filedialog.askopenfilename(title="Select Cookies File", filetypes=filetypes)
+        if filename:
+            self.cookies_file_var.set(filename)
+
     def _build_command(self, dry_run=False):
         source = self.source_var.get().strip()
         if not source:
@@ -438,8 +447,6 @@ class YouTubeScreenshotGUI:
 
         if self.png_var.get():
             cmd.append("--png")
-        if self.use_gpu_var.get():
-            cmd.append("--use-gpu")
         if not self.parallel_var.get():
             cmd.append("--disable-parallel")
         if self.detect_watermarks_var.get():
@@ -462,8 +469,11 @@ class YouTubeScreenshotGUI:
 
         # Add YouTube authentication options
         cookies_browser = self.cookies_from_browser_var.get()
+        cookies_file = self.cookies_file_var.get().strip()
         if cookies_browser:
             cmd.extend(["--cookies-from-browser", cookies_browser])
+        elif cookies_file:
+            cmd.extend(["--cookies", cookies_file])
 
         sleep_requests = self.sleep_requests_var.get()
         if sleep_requests > 0:

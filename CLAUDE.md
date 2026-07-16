@@ -115,9 +115,22 @@ No new Python dependencies required. The implementation uses:
 
 ## Version History
 
-- **Current**: Added authentication support, rate limiting, and PO Token error handling
-- **Previous**: Basic yt-dlp integration with Deno support
+- **Current (July 2026 audit)**: Major bug-fix release:
+  - Fixed `--cookies` (yt-dlp API key is `cookiefile`, not `cookies` — was silently ignored)
+  - Fixed rate limiting (yt-dlp API key is `sleep_interval_requests`, not `sleep_requests` — was silently ignored)
+  - Fixed `--dry-run` downloading the full video (now metadata-only via `extract_info`)
+  - Frames now stream through a bounded worker pool instead of being fully buffered in RAM (long videos no longer OOM)
+  - Fixed `--fast-scene` (was passed as `stats_file_path` positional to `scenedetect.detect()`); scene detection now uses the SceneManager API with `frame_skip` for fast mode
+  - Removed the GPU/PyCUDA path (`--use-gpu` is now a deprecated no-op): it compiled a CUDA kernel per frame that only multiplied pixel values by 1.2, corrupting output brightness
+  - Fixed resume progress tracking in parallel mode (always recorded 0 processed); progress.json now cleaned up after successful completion
+  - `remove_black_bars` rewritten with numpy (was a per-pixel Python loop) and guards against all-black frames; PIL round-trip removed from the frame pipeline
+  - Keyframe extraction: removed the `scale=in_range=full:out_range=tv,zscale=...` filter chain (double-applied limited range and required libzimg); counts now reflect actual extracted files
+  - Guard against fps<=0 videos; validate local file/cookies-file existence; YouTube Shorts/live URL cleaning
+  - GUI: removed GPU checkbox, added cookies-file browse field
+  - Startup scripts: removed GPU install option, menus renumbered (5=GUI, 6=help, 7=exit)
+- **Previous**: Added authentication support, rate limiting, and PO Token error handling
+- **Earlier**: Basic yt-dlp integration with Deno support
 
 ---
 
-Last updated: April 2026
+Last updated: July 2026

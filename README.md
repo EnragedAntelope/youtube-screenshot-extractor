@@ -14,7 +14,7 @@ Extract high-quality frames from YouTube videos, local video files, or any yt-dl
 - Quality and blur filtering
 - Automatic black bar removal
 - Basic watermark detection
-- Parallel processing and optional GPU acceleration
+- Parallel processing with bounded memory use (handles long videos)
 - Resume interrupted extractions
 - Post-processing filters (gradfun, deblock, deband)
 - **GUI and command-line interfaces**
@@ -25,21 +25,21 @@ Extract high-quality frames from YouTube videos, local video files, or any yt-dl
 
 ### Windows
 **Double-click `START.bat`** and use the menu:
-1. **Initial Setup** - First time only, creates environment and installs dependencies
-3. **Install Deno** - **Required for YouTube** (other sites work without it)
-4. **Install FFmpeg** - **Required for keyframes and some filters**
-6. **Launch GUI** - Start the graphical interface
+- **[1] Initial Setup** - First time only, creates environment and installs dependencies
+- **[3] Install Deno** - **Required for YouTube** (other sites work without it)
+- **[4] Install FFmpeg** - **Required for keyframes and some filters**
+- **[5] Launch GUI** - Start the graphical interface
 
-The menu also offers yt-dlp updates (option 2) and optional GPU support (option 5).
+The menu also offers yt-dlp updates (option 2) and command-line help (option 6).
 
 ### macOS / Linux
 **Run `./start.sh`** in terminal and use the menu:
-1. **Initial Setup** - First time only, creates environment and installs dependencies
-3. **Install Deno** - **Required for YouTube** (other sites work without it)
-4. **Install FFmpeg** - **Required for keyframes and some filters**
-6. **Launch GUI** - Start the graphical interface
+- **[1] Initial Setup** - First time only, creates environment and installs dependencies
+- **[3] Install Deno** - **Required for YouTube** (other sites work without it)
+- **[4] Install FFmpeg** - **Required for keyframes and some filters**
+- **[5] Launch GUI** - Start the graphical interface
 
-The menu also offers yt-dlp updates (option 2) and optional GPU support (option 5).
+The menu also offers yt-dlp updates (option 2) and command-line help (option 6).
 
 ## Requirements
 
@@ -53,7 +53,6 @@ The menu also offers yt-dlp updates (option 2) and optional GPU support (option 
   - macOS: Use `./start.sh` option 4, or `brew install ffmpeg`
   - Linux: Use `./start.sh` option 4, or `sudo apt install ffmpeg` (Ubuntu/Debian)
   - Note: Scene detection and deblock filter work without FFmpeg
-- PyCUDA (optional) - for NVIDIA GPU acceleration
 
 **Important:** Keep yt-dlp updated regularly — YouTube compatibility breaks frequently. Use startup script option 2, or run: `pip install --upgrade "yt-dlp[default]"`
 
@@ -145,12 +144,12 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 | `--png` | Save as PNG instead of JPG | JPG |
 | `--detect-watermarks` | Enable watermark detection | off |
 | `--watermark-threshold` | Watermark sensitivity 0-1 | 0.8 |
-| `--use-gpu` | Enable GPU acceleration | off |
 | `--fast-scene` | Faster but less accurate scene detection | off |
 | `--resume` | Resume interrupted extraction | off |
 | `--thumbnail` | Generate 3x3 thumbnail montage | off |
 | `--verbose` | Detailed logging | off |
-| `--dry-run` | Preview without processing | off |
+| `--dry-run` | Preview without downloading or processing | off |
+| `--disable-parallel` | Process frames one at a time | off |
 | `--config` | Load settings from JSON file | none |
 | `--gradfun` | Reduce color banding (subtle) | off |
 | `--deblock` | Reduce compression artifacts | off |
@@ -224,7 +223,6 @@ To avoid hitting these limits:
 | No frames extracted | Lower thresholds: `--quality 20 --blur 30` |
 | Keyframe extraction fails | Ensure FFmpeg is installed and in PATH |
 | Scene detection slow/crashes | Use `--fast-scene` or process shorter segments |
-| GPU not working | Verify CUDA and PyCUDA installation, or remove `--use-gpu` |
 | False watermark positives | Increase threshold: `--watermark-threshold 0.9` |
 | Process dies on large videos | Use `--resume`, check disk space |
 
@@ -258,16 +256,9 @@ YouTube has implemented **PO (Proof of Origin) Tokens** as an anti-bot measure. 
    ```
    YouTube changes their systems frequently, and yt-dlp updates regularly to keep up.
 
-## GPU Acceleration (Optional)
+## Note on GPU Acceleration
 
-For NVIDIA GPUs, install PyCUDA for faster processing:
-
-1. Install [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)
-2. Windows: Run `START.bat` option 5
-   macOS/Linux: Run `./start.sh` option 5
-   Or manually: `pip install pycuda`
-
-**Note:** PyCUDA installation takes 5-10 minutes. Only recommended if processing many videos. Modern CPUs are usually fast enough.
+Earlier versions offered a `--use-gpu` flag (PyCUDA). It has been removed: the GPU path did not actually accelerate anything and altered image brightness as a side effect. All processing is CPU-based and parallelized; the flag is still accepted for backwards compatibility but does nothing.
 
 ## License
 

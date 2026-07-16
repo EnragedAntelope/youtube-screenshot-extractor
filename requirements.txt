@@ -1,6 +1,6 @@
-yt-dlp[default]>=2026.3.17
+yt-dlp[default]>=2026.7.4
 opencv-python>=4.10.0
 numpy>=2.0.0
 Pillow>=11.0.0
-scenedetect>=0.6.4
+scenedetect>=0.6.4,<0.8
 tqdm>=4.66.0

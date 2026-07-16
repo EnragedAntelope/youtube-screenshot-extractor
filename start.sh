@@ -53,18 +53,15 @@ show_menu() {
     echo "  [4] Install FFmpeg - REQUIRED for keyframes/filters"
     echo "      Media processing tool needed for advanced features"
     echo ""
-    echo "  [5] Install GPU Support - optional, rarely needed"
-    echo "      PyCUDA for NVIDIA GPU - modern CPUs are usually fast enough"
-    echo ""
-    echo "  [6] Launch GUI"
+    echo "  [5] Launch GUI"
     echo "      Start the graphical interface"
     echo ""
-    echo "  [7] Launch Command Line Help"
+    echo "  [6] Launch Command Line Help"
     echo "      Show all command line options"
     echo ""
-    echo "  [8] Exit"
+    echo "  [7] Exit"
     echo ""
-    read -p "  Enter your choice [1-8]: " choice
+    read -p "  Enter your choice [1-7]: " choice
     echo ""
 
     case $choice in
@@ -72,10 +69,9 @@ show_menu() {
         2) update_ytdlp ;;
         3) install_deno ;;
         4) install_ffmpeg ;;
-        5) install_gpu ;;
-        6) launch_gui ;;
-        7) launch_help ;;
-        8) exit 0 ;;
+        5) launch_gui ;;
+        6) launch_help ;;
+        7) exit 0 ;;
         *)
             print_message "$RED" "  Invalid choice. Please try again."
             sleep 2
@@ -169,7 +165,7 @@ initial_setup() {
     print_message "$YELLOW" "  - Run option [3] to install Deno (required for YouTube)"
     print_message "$YELLOW" "  - Run option [4] to install FFmpeg (required for keyframes/filters)"
     echo ""
-    print_message "$GREEN" "  Then use option [6] to launch the GUI."
+    print_message "$GREEN" "  Then use option [5] to launch the GUI."
     echo ""
     read -p "Press Enter to continue..."
     show_menu
@@ -396,83 +392,6 @@ install_ffmpeg() {
     else
         print_message "$YELLOW" "  Please verify FFmpeg installation by running: ffmpeg -version"
     fi
-    echo ""
-    read -p "Press Enter to continue..."
-    show_menu
-}
-
-# Install GPU support
-install_gpu() {
-    print_header
-    print_message "$BLUE" "  GPU Support Installation - Optional"
-    print_message "$BLUE" "================================================================"
-    echo ""
-    echo "  This installs PyCUDA for NVIDIA GPU acceleration."
-    echo ""
-    print_message "$YELLOW" "  WARNING: This install takes 5-10 minutes and downloads large"
-    print_message "$YELLOW" "  dependencies. Only recommended if processing many videos."
-    echo ""
-    echo "  REQUIREMENTS:"
-    echo "    - NVIDIA GPU"
-    echo "    - CUDA Toolkit - https://developer.nvidia.com/cuda-toolkit"
-    if [[ "$OS" == "linux" ]]; then
-        echo "    - build-essential (Ubuntu) or Development Tools (Fedora)"
-    else
-        echo "    - Xcode Command Line Tools (macOS)"
-    fi
-    echo ""
-    echo "  Skip this if you don't have an NVIDIA GPU - the tool works"
-    echo "  fine with CPU processing."
-    echo ""
-    read -p "  Proceed with installation? [y/n]: " confirm
-
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        show_menu
-        return
-    fi
-
-    if [ ! -d "venv" ]; then
-        print_message "$RED" "  ERROR: Virtual environment not found."
-        echo "  Please run Initial Setup first - option 1."
-        echo ""
-        read -p "Press Enter to continue..."
-        show_menu
-        return
-    fi
-
-    source venv/bin/activate
-    echo ""
-    print_message "$GREEN" "  Installing PyCUDA - this will take several minutes..."
-    echo ""
-
-    if command -v uv &> /dev/null; then
-        uv pip install pycuda 2>/dev/null || pip install pycuda
-    else
-        pip install pycuda
-    fi
-
-    if [ $? -ne 0 ]; then
-        echo ""
-        print_message "$RED" "================================================================"
-        print_message "$RED" "  PyCUDA installation failed."
-        echo ""
-        echo "  This is normal if you don't have:"
-        echo "    - An NVIDIA GPU"
-        echo "    - CUDA Toolkit installed"
-        if [[ "$OS" == "linux" ]]; then
-            echo "    - build-essential (sudo apt install build-essential)"
-        else
-            echo "    - Xcode Command Line Tools (xcode-select --install)"
-        fi
-        echo ""
-        echo "  The tool will work fine without GPU acceleration."
-        print_message "$RED" "================================================================"
-    else
-        echo ""
-        print_message "$GREEN" "  PyCUDA installed successfully!"
-        print_message "$GREEN" "  GPU acceleration is now available."
-    fi
-
     echo ""
     read -p "Press Enter to continue..."
     show_menu
