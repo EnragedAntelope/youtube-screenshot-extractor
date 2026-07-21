@@ -35,26 +35,33 @@ print_header() {
     print_message "$BLUE" "================================================================"
     print_message "$BLUE" "       YouTube Screenshot Extractor - Setup and Launch"
     print_message "$BLUE" "================================================================"
+    if [ -n "$VERDATE" ]; then
+        print_message "$GREEN" "  Installed version: $VERDATE"
+    fi
+    print_message "$YELLOW" "  Tip: run [2] Check for Updates to stay current - especially"
+    print_message "$YELLOW" "       if it's been a while since you last used this tool."
     echo ""
 }
 
 # Show main menu
 show_menu() {
     print_header
-    echo "  [1] Initial Setup - first time only"
+    echo "  [1] Launch GUI"
+    echo "      Start the graphical interface"
+    echo ""
+    echo "  [2] Check for Updates"
+    echo "      Pull the latest tool code and update yt-dlp"
+    echo ""
+    echo "  --- First-time setup ---"
+    echo ""
+    echo "  [3] Initial Setup - first time only"
     echo "      Creates virtual environment and installs dependencies"
     echo ""
-    echo "  [2] Update yt-dlp"
-    echo "      Keep yt-dlp current for YouTube compatibility"
-    echo ""
-    echo "  [3] Install Deno - REQUIRED for YouTube"
+    echo "  [4] Install Deno - REQUIRED for YouTube"
     echo "      JavaScript runtime needed for YouTube downloads"
     echo ""
-    echo "  [4] Install FFmpeg - REQUIRED for keyframes/filters"
+    echo "  [5] Install FFmpeg - REQUIRED for keyframes/filters"
     echo "      Media processing tool needed for advanced features"
-    echo ""
-    echo "  [5] Launch GUI"
-    echo "      Start the graphical interface"
     echo ""
     echo "  [6] Launch Command Line Help"
     echo "      Show all command line options"
@@ -65,11 +72,11 @@ show_menu() {
     echo ""
 
     case $choice in
-        1) initial_setup ;;
-        2) update_ytdlp ;;
-        3) install_deno ;;
-        4) install_ffmpeg ;;
-        5) launch_gui ;;
+        1) launch_gui ;;
+        2) update ;;
+        3) initial_setup ;;
+        4) install_deno ;;
+        5) install_ffmpeg ;;
         6) launch_help ;;
         7) exit 0 ;;
         *)
@@ -162,45 +169,82 @@ initial_setup() {
     print_message "$GREEN" "================================================================"
     echo ""
     print_message "$YELLOW" "  IMPORTANT NEXT STEPS:"
-    print_message "$YELLOW" "  - Run option [3] to install Deno (required for YouTube)"
-    print_message "$YELLOW" "  - Run option [4] to install FFmpeg (required for keyframes/filters)"
+    print_message "$YELLOW" "  - Run option [4] to install Deno (required for YouTube)"
+    print_message "$YELLOW" "  - Run option [5] to install FFmpeg (required for keyframes/filters)"
     echo ""
-    print_message "$GREEN" "  Then use option [5] to launch the GUI."
+    print_message "$GREEN" "  Then use option [1] to launch the GUI."
     echo ""
     read -p "Press Enter to continue..."
     show_menu
 }
 
-# Update yt-dlp
-update_ytdlp() {
+# Check for updates (tool code via git + yt-dlp)
+update() {
     print_header
-    print_message "$BLUE" "  Updating yt-dlp"
+    print_message "$BLUE" "  Check for Updates"
     print_message "$BLUE" "================================================================"
     echo ""
 
+    LAUNCHER_CHANGED=0
+
+    # --- Update yt-dlp first (needs the virtual environment) ---
     if [ ! -d "venv" ]; then
-        print_message "$RED" "  ERROR: Virtual environment not found."
-        echo "  Please run Initial Setup first - option 1."
-        echo ""
-        read -p "Press Enter to continue..."
-        show_menu
-        return
-    fi
-
-    source venv/bin/activate
-    print_message "$GREEN" "  Checking for yt-dlp updates..."
-    echo ""
-
-    if command -v uv &> /dev/null; then
-        uv pip install --upgrade "yt-dlp[default]"
+        print_message "$YELLOW" "  Skipping yt-dlp update: run Initial Setup - option 3 - first."
     else
-        pip install --upgrade "yt-dlp[default]"
+        source venv/bin/activate
+        print_message "$GREEN" "  Checking for yt-dlp updates..."
+        echo ""
+        if command -v uv &> /dev/null; then
+            uv pip install --upgrade "yt-dlp[default]"
+        else
+            pip install --upgrade "yt-dlp[default]"
+        fi
+        echo ""
+        print_message "$GREEN" "  yt-dlp is up to date."
+    fi
+    echo ""
+
+    # --- Update the tool's own code via git ---
+    if ! command -v git &> /dev/null; then
+        print_message "$YELLOW" "  Git is not installed, so the tool's code cannot be auto-updated."
+        echo "  Install Git, or download the latest version from:"
+        echo "    https://github.com/EnragedAntelope/youtube-screenshot-extractor"
+    elif [ ! -d ".git" ]; then
+        print_message "$YELLOW" "  This folder is not a git checkout - likely downloaded as a ZIP -"
+        echo "  so the tool's code cannot be auto-updated. To get updates automatically,"
+        echo "  clone the repo instead:"
+        echo "    git clone https://github.com/EnragedAntelope/youtube-screenshot-extractor.git"
+    else
+        print_message "$GREEN" "  Checking for tool updates..."
+        OLDREV=$(git rev-parse HEAD 2>/dev/null)
+        if git pull --ff-only; then
+            NEWREV=$(git rev-parse HEAD 2>/dev/null)
+            if [ "$OLDREV" == "$NEWREV" ]; then
+                print_message "$GREEN" "  Tool code is already up to date."
+            else
+                print_message "$GREEN" "  Tool updated to the latest version."
+                if git diff --name-only "$OLDREV" "$NEWREV" | grep -qi "start.sh"; then
+                    LAUNCHER_CHANGED=1
+                fi
+            fi
+        else
+            print_message "$RED" "  Could not update automatically (local changes or network problem)."
+            echo "  Your files were NOT modified. Resolve local changes, or update manually."
+        fi
     fi
 
     echo ""
-    print_message "$GREEN" "  yt-dlp has been updated to the latest version."
-    echo ""
-    print_message "$YELLOW" "  TIP: Run this regularly to maintain YouTube compatibility."
+    if [ "$LAUNCHER_CHANGED" == "1" ]; then
+        print_message "$YELLOW" "  ================================================================"
+        print_message "$YELLOW" "  The launcher - start.sh - itself was updated."
+        print_message "$YELLOW" "  Please re-run ./start.sh to load the new version."
+        print_message "$YELLOW" "  ================================================================"
+        echo ""
+        read -p "Press Enter to exit..."
+        exit 0
+    fi
+    print_message "$GREEN" "  All set. Updated code takes effect the next time you launch the GUI -"
+    print_message "$GREEN" "  no restart of this menu needed."
     echo ""
     read -p "Press Enter to continue..."
     show_menu
@@ -405,7 +449,7 @@ launch_gui() {
 
     if [ ! -d "venv" ]; then
         print_message "$RED" "  ERROR: Virtual environment not found."
-        echo "  Please run Initial Setup first - option 1."
+        echo "  Please run Initial Setup first - option 3."
         echo ""
         read -p "Press Enter to continue..."
         show_menu
@@ -429,7 +473,7 @@ launch_help() {
 
     if [ ! -d "venv" ]; then
         print_message "$RED" "  ERROR: Virtual environment not found."
-        echo "  Please run Initial Setup first - option 1."
+        echo "  Please run Initial Setup first - option 3."
         echo ""
         read -p "Press Enter to continue..."
         show_menu
@@ -470,6 +514,12 @@ if [[ "$OS" == "unknown" ]]; then
     print_message "$RED" "Unsupported operating system: $OSTYPE"
     print_message "$RED" "This script supports macOS and Linux only."
     exit 1
+fi
+
+# Determine the installed version date (only if this is a git checkout)
+VERDATE=""
+if command -v git &> /dev/null && [ -d ".git" ]; then
+    VERDATE=$(git log -1 --format=%cs 2>/dev/null)
 fi
 
 # Run menu loop

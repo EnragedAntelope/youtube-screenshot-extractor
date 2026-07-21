@@ -3,27 +3,41 @@ setlocal enabledelayedexpansion
 title YouTube Screenshot Extractor
 color 0A
 
+REM Determine the installed version date (only if this is a git checkout)
+set "VERDATE="
+git --version >nul 2>&1
+if not errorlevel 1 (
+    if exist ".git" (
+        for /f "delims=" %%i in ('git log -1 "--format=%%cs" 2^>nul') do set "VERDATE=%%i"
+    )
+)
+
 :menu
 cls
 echo.
 echo  ================================================================
 echo            YouTube Screenshot Extractor - Setup and Launch
 echo  ================================================================
+if defined VERDATE echo   Installed version: !VERDATE!
+echo   Tip: run [2] Check for Updates to stay current - especially
+echo        if it's been a while since you last used this tool.
 echo.
-echo   [1] Initial Setup - first time only
+echo   [1] Launch GUI
+echo       Start the graphical interface
+echo.
+echo   [2] Check for Updates
+echo       Pull the latest tool code and update yt-dlp
+echo.
+echo   --- First-time setup ---
+echo.
+echo   [3] Initial Setup - first time only
 echo       Creates virtual environment and installs dependencies
 echo.
-echo   [2] Update yt-dlp
-echo       Keep yt-dlp current for YouTube compatibility
-echo.
-echo   [3] Install Deno - REQUIRED for YouTube
+echo   [4] Install Deno - REQUIRED for YouTube
 echo       JavaScript runtime needed for YouTube downloads
 echo.
-echo   [4] Install FFmpeg - REQUIRED for keyframes/filters
+echo   [5] Install FFmpeg - REQUIRED for keyframes/filters
 echo       Media processing tool needed for advanced features
-echo.
-echo   [5] Launch GUI
-echo       Start the graphical interface
 echo.
 echo   [6] Launch Command Line Help
 echo       Show all command line options
@@ -32,11 +46,11 @@ echo   [7] Exit
 echo.
 set /p choice="  Enter your choice [1-7]: "
 
-if "%choice%"=="1" goto setup
-if "%choice%"=="2" goto update_ytdlp
-if "%choice%"=="3" goto install_deno
-if "%choice%"=="4" goto install_ffmpeg
-if "%choice%"=="5" goto launch_gui
+if "%choice%"=="1" goto launch_gui
+if "%choice%"=="2" goto update
+if "%choice%"=="3" goto setup
+if "%choice%"=="4" goto install_deno
+if "%choice%"=="5" goto install_ffmpeg
 if "%choice%"=="6" goto launch_help
 if "%choice%"=="7" goto end
 
@@ -119,38 +133,86 @@ echo   Setup Complete!
 echo  ================================================================
 echo.
 echo  IMPORTANT NEXT STEPS:
-echo  - Run option [3] to install Deno (required for YouTube)
-echo  - Run option [4] to install FFmpeg (required for keyframes/filters)
+echo  - Run option [4] to install Deno (required for YouTube)
+echo  - Run option [5] to install FFmpeg (required for keyframes/filters)
 echo.
-echo  Then use option [5] to launch the GUI.
+echo  Then use option [1] to launch the GUI.
 echo.
 pause
 goto menu
 
-:update_ytdlp
+:update
 cls
 echo.
 echo  ================================================================
-echo   Updating yt-dlp
+echo   Check for Updates
 echo  ================================================================
 echo.
 
+set "LAUNCHER_CHANGED="
+
+REM --- Update yt-dlp first (needs the virtual environment) ---
 if not exist "venv" (
-    echo  ERROR: Virtual environment not found.
-    echo  Please run Initial Setup first - option 1.
+    echo  Skipping yt-dlp update: run Initial Setup - option 3 - first.
+) else (
+    call venv\Scripts\activate.bat
+    echo  Checking for yt-dlp updates...
     echo.
-    pause
-    goto menu
+    uv pip install --upgrade "yt-dlp[default]" 2>nul || pip install --upgrade "yt-dlp[default]"
+    echo.
+    echo  yt-dlp is up to date.
+)
+echo.
+
+REM --- Update the tool's own code via git (kept last so the launcher is
+REM     only rewritten right before we hand control back) ---
+git --version >nul 2>&1
+if errorlevel 1 (
+    echo  Git is not installed, so the tool's code cannot be auto-updated.
+    echo  Install Git from https://git-scm.com to enable one-click updates, or
+    echo  download the latest version from:
+    echo    https://github.com/EnragedAntelope/youtube-screenshot-extractor
+    goto update_done
+)
+if not exist ".git" (
+    echo  This folder is not a git checkout - it was likely downloaded as a ZIP -
+    echo  so the tool's code cannot be auto-updated. To get updates automatically,
+    echo  clone the repo instead:
+    echo    git clone https://github.com/EnragedAntelope/youtube-screenshot-extractor.git
+    goto update_done
 )
 
-call venv\Scripts\activate.bat
-echo  Checking for yt-dlp updates...
+echo  Checking for tool updates...
+for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do set "OLDREV=%%i"
+git pull --ff-only
+if errorlevel 1 (
+    echo.
+    echo  Could not update automatically. This usually means you have local
+    echo  changes, or there was a network problem. Your files were NOT modified.
+    echo  Resolve any local changes, or re-download the latest release manually.
+    goto update_done
+)
+for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do set "NEWREV=%%i"
+if "!OLDREV!"=="!NEWREV!" (
+    echo  Tool code is already up to date.
+) else (
+    echo  Tool updated to the latest version.
+    for /f "delims=" %%i in ('git diff --name-only !OLDREV! !NEWREV! 2^>nul ^| findstr /i "START.bat"') do set "LAUNCHER_CHANGED=1"
+)
+
+:update_done
 echo.
-uv pip install --upgrade "yt-dlp[default]" 2>nul || pip install --upgrade "yt-dlp[default]"
-echo.
-echo  yt-dlp has been updated to the latest version.
-echo.
-echo  TIP: Run this regularly to maintain YouTube compatibility.
+if defined LAUNCHER_CHANGED (
+    echo  ================================================================
+    echo   The launcher - START.bat - itself was updated.
+    echo   Close this window and run START.bat again to load the new version.
+    echo  ================================================================
+    echo.
+    pause
+    goto end
+)
+echo  All set. Updated code takes effect the next time you launch the GUI -
+echo  no restart of this menu needed.
 echo.
 pause
 goto menu
@@ -318,7 +380,7 @@ echo.
 
 if not exist "venv" (
     echo  ERROR: Virtual environment not found.
-    echo  Please run Initial Setup first - option 1.
+    echo  Please run Initial Setup first - option 3.
     echo.
     pause
     goto menu
@@ -337,7 +399,7 @@ echo.
 
 if not exist "venv" (
     echo  ERROR: Virtual environment not found.
-    echo  Please run Initial Setup first - option 1.
+    echo  Please run Initial Setup first - option 3.
     echo.
     pause
     goto menu

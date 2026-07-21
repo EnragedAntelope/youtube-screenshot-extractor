@@ -22,13 +22,12 @@ Pull clean, high-quality still frames out of any video — YouTube, 1000+ other 
 ## Quick Start
 
 ### Windows
-Double-click **`START.bat`** and, in order, run:
-- **[1] Initial Setup** — first time only
-- **[3] Install Deno** — required for YouTube downloads
-- **[4] Install FFmpeg** — required for keyframe extraction and some filters
-- **[5] Launch GUI**
+Double-click **`START.bat`**. First time, run in order:
+- **[3] Initial Setup** — first time only
+- **[4] Install Deno** — required for YouTube downloads
+- **[5] Install FFmpeg** — required for keyframe extraction and some filters
 
-(Option 2 updates yt-dlp, option 6 shows CLI help — use them anytime.)
+Then use **[1] Launch GUI** to start. **[2] Check for Updates** pulls the latest tool code and updates yt-dlp in one step — run it anytime, especially if it's been a while (option [6] shows CLI help).
 
 ### macOS / Linux
 Run **`./start.sh`** — same menu, same steps.
@@ -44,7 +43,7 @@ Run **`./start.sh`** — same menu, same steps.
 
 Both are handled for you by the startup script menus above.
 
-**Keep yt-dlp updated** — YouTube changes frequently, and yt-dlp updates to match. Use startup script option 2, or `pip install --upgrade "yt-dlp[default]"`.
+**Keep yt-dlp updated** — YouTube changes frequently, and yt-dlp updates to match. Use startup script option **[2] Check for Updates**, or `pip install --upgrade "yt-dlp[default]"`.
 
 ## Manual Installation
 

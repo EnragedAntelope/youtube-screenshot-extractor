@@ -115,7 +115,13 @@ No new Python dependencies required. The implementation uses:
 
 ## Version History
 
-- **Current (July 2026 audit)**: Major bug-fix release:
+- **Current (July 2026 launcher UX)**: Startup script usability pass:
+  - Reordered the menu around actual usage: `[1] Launch GUI` and `[2] Check for Updates` on top, first-time-only steps (`[3]` Initial Setup, `[4]` Deno, `[5]` FFmpeg) grouped under a "First-time setup" divider, help/exit last
+  - Merged "Update yt-dlp" into `[2] Check for Updates`, which now `git pull --ff-only`s the tool's own code *and* upgrades yt-dlp in one step (git step runs last so the launcher is only rewritten right before control returns)
+  - Update step degrades gracefully: skips the git pull with guidance when git is missing or the folder is a ZIP download (no `.git`), skips yt-dlp when no venv, and reports cleanly on `--ff-only` failure (local changes / network) without touching files
+  - Restart handling: Python code changes take effect on the next launch (no menu restart); only if the launcher script itself (`START.bat`/`start.sh`) changed in the pull does it detect that (`git diff --name-only`) and tell the user to re-run the launcher
+  - Menu header shows the installed version's commit date (`git log -1 --format=%cs`) plus a standing tip to run Check for Updates "especially if it's been a while" — no state files, no network on launch
+- **Previous (July 2026 audit)**: Major bug-fix release:
   - Fixed `--cookies` (yt-dlp API key is `cookiefile`, not `cookies` — was silently ignored)
   - Fixed rate limiting (yt-dlp API key is `sleep_interval_requests`, not `sleep_requests` — was silently ignored)
   - Fixed `--dry-run` downloading the full video (now metadata-only via `extract_info`)
