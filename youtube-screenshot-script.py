@@ -94,6 +94,46 @@ def clean_youtube_url(url):
     return url
 
 
+def parse_extractor_args(values):
+    """Parse --extractor-args strings into yt-dlp's nested option format.
+
+    yt-dlp expects extractor_args as {ie_key: {arg_name: [values]}} - NOT a flat
+    dict of strings. Its CLI grammar is 'IE_KEY:ARG1=VAL1,VAL2;ARG2=VAL3', and the
+    flag may be repeated for multiple extractors.
+
+    Args:
+        values: list of raw --extractor-args strings (argparse 'append' action)
+
+    Returns:
+        Nested dict suitable for ydl_opts['extractor_args'], e.g.
+        parse_extractor_args(['youtube:player_client=mweb'])
+            -> {'youtube': {'player_client': ['mweb']}}
+
+    Raises:
+        ValueError: if a value is missing the required 'EXTRACTOR:' prefix.
+    """
+    result = {}
+    for value in values:
+        if ':' not in value:
+            raise ValueError(
+                f"Invalid --extractor-args '{value}'. "
+                "Expected format: EXTRACTOR:ARG=VALUE (e.g. youtube:player_client=mweb)"
+            )
+        ie_key, args_str = value.split(':', 1)
+        ie_args = result.setdefault(ie_key.strip().lower(), {})
+        for item in args_str.split(';'):
+            item = item.strip()
+            if not item:
+                continue
+            if '=' in item:
+                key, val = item.split('=', 1)
+                ie_args[key.strip()] = [v.strip() for v in val.split(',')]
+            else:
+                # Bare flag with no value (rare) - yt-dlp treats these as empty lists
+                ie_args[item] = []
+    return result
+
+
 def sanitize_output_path(path):
     """Sanitize an output path while preserving directory structure.
 
@@ -311,6 +351,7 @@ def calculate_quality_score(image):
 
     # Contrast and Brightness
     contrast = np.std(gray) / (np.mean(gray) + 1e-6)  # Add small epsilon to avoid division by zero
+    contrast_norm = min(max(contrast, 0), 1.0)  # Clamp like the other terms so the 0-100 scale stays uniform
     brightness = np.mean(gray) / 255
 
     # Advanced metrics
@@ -320,7 +361,7 @@ def calculate_quality_score(image):
     entropy_norm = min(max(entropy / 8, 0), 1.0)  # 8 is max entropy for 8-bit image
 
     # Calculate weighted score
-    score = (sharpness_norm * 0.3 + edge_strength_norm * 0.2 + contrast * 0.2 + brightness * 0.1 + entropy_norm * 0.2) * 100
+    score = (sharpness_norm * 0.3 + edge_strength_norm * 0.2 + contrast_norm * 0.2 + brightness * 0.1 + entropy_norm * 0.2) * 100
     return max(min(score, 100), 0)  # Ensure the score is between 0 and 100
 
 def remove_black_bars(frame, threshold=10):
@@ -775,6 +816,8 @@ Note:
                         help="Resume an interrupted extraction process")
     parser.add_argument("--thumbnail", action="store_true",
                         help="Generate a thumbnail montage of extracted frames")
+    parser.add_argument("--keep-video", action="store_true",
+                        help="Keep the downloaded source video instead of deleting it after extraction (ignored for local files)")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable detailed logging")
     parser.add_argument("--dry-run", action="store_true",
@@ -792,8 +835,9 @@ Note:
                         help="Path to a cookies file (Netscape format) for YouTube authentication")
     parser.add_argument("--sleep-requests", type=int, default=0, metavar='SECONDS',
                         help="Add a delay (in seconds) between requests to avoid rate limiting. Recommended: 3-5 for multiple videos.")
-    parser.add_argument("--extractor-args", type=str, metavar='ARGS',
-                        help="Additional extractor arguments for yt-dlp (e.g., 'youtube:player_client=mweb'). See yt-dlp documentation.")
+    parser.add_argument("--extractor-args", type=str, metavar='ARGS', action='append',
+                        help="Additional extractor arguments for yt-dlp in EXTRACTOR:ARG=VALUE form "
+                             "(e.g., 'youtube:player_client=mweb'). May be given multiple times. See yt-dlp documentation.")
 
     args = parser.parse_args()
 
@@ -830,14 +874,13 @@ Note:
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Parse extractor_args if provided (key:value pairs separated by semicolons)
+    # Parse extractor_args into yt-dlp's nested {ie: {arg: [values]}} format
     extractor_args_dict = None
     if args.extractor_args:
-        extractor_args_dict = {}
-        for pair in args.extractor_args.split(';'):
-            if ':' in pair:
-                key, value = pair.split(':', 1)
-                extractor_args_dict[key.strip()] = value.strip()
+        try:
+            extractor_args_dict = parse_extractor_args(args.extractor_args)
+        except ValueError as e:
+            parser.error(str(e))
 
     is_url = args.source.startswith(('http://', 'https://', 'www.'))
 
@@ -919,7 +962,7 @@ Note:
     if args.sleep_requests > 0:
         print(f"Rate limiting: {args.sleep_requests}s delay between requests")
     if args.extractor_args:
-        print(f"Extractor arguments: {args.extractor_args}")
+        print(f"Extractor arguments: {'; '.join(args.extractor_args)}")
 
     if not args.dry_run:
         start_time = time.time()
@@ -964,6 +1007,18 @@ Note:
 
         if args.thumbnail:
             generate_thumbnail(output_folder)
+
+        # Remove the downloaded source video (URL inputs only) so runs don't
+        # leave full-size files behind. Never touch a user's local file.
+        if is_url and not args.keep_video:
+            try:
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                    safe_print(f"Cleaned up downloaded video: {video_path}")
+            except OSError as e:
+                safe_print(f"Note: Could not remove downloaded video {video_path}: {e}")
+        elif is_url and args.keep_video:
+            safe_print(f"Downloaded video kept at: {video_path}")
     else:
         print("Dry run completed. No video was downloaded and no frames were processed.")
 

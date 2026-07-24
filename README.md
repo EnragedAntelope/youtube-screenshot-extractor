@@ -101,6 +101,7 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 | `--fast-scene` | Faster but less accurate scene detection | off |
 | `--resume` | Resume an interrupted extraction | off |
 | `--thumbnail` | Generate a 3x3 thumbnail montage | off |
+| `--keep-video` | Keep the downloaded source video (deleted after extraction by default) | off |
 | `--verbose` | Detailed logging | off |
 | `--dry-run` | Preview without downloading or processing | off |
 | `--disable-parallel` | Process frames one at a time | off |
@@ -124,6 +125,9 @@ Frames are saved as `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`:
 ## Tips
 
 - **Speed**: `keyframes` is fastest, `scene` finds natural cuts, `interval`/`all` can be slow on long videos.
+- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, or post-processing filters — those only apply to the other methods.
+- **Default method**: the CLI defaults to `interval`; the GUI defaults to `scene` (a better starting point for most videos).
+- **Downloaded videos are deleted after extraction** by default. Pass `--keep-video` to retain the source file.
 - **Quality tuning**: start with `--quality 30 --blur 50` and adjust from there.
 - **Long videos**: use `--resume` and cap resolution with `--max-resolution 1080`.
 - **Filters**: `--gradfun` for subtle banding, `--deband` for severe banding — both add processing time.

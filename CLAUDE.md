@@ -115,7 +115,15 @@ No new Python dependencies required. The implementation uses:
 
 ## Version History
 
-- **Current (July 2026 launcher UX)**: Startup script usability pass:
+- **Current (July 2026 audit follow-up)**: Second audit pass, fixing issues the prior audit missed:
+  - Fixed `--extractor-args` (was parsed into a flat `{ie: 'k=v'}` dict and passed to yt-dlp, which expects the nested `{ie: {arg: [values]}}` form — the documented `youtube:player_client=mweb` example would raise `AttributeError` inside yt-dlp). Now parsed via `parse_extractor_args()` matching yt-dlp's CLI grammar; the flag accepts repetition (`action='append'`)
+  - Downloaded source video is now deleted after extraction (URL inputs only; never local files) with a `--keep-video` opt-out — previously every YouTube run left a full-size `downloaded_video_*.mp4` behind
+  - Clamped the `contrast` term in `calculate_quality_score` to [0,1] like the other components (was unbounded, inflating scores of high-contrast frames on the 0-100 scale)
+  - `.gitignore` now excludes run artifacts (`downloaded_video_*.mp4`, `screenshots_*/`, `progress.json`)
+  - GUI `deblock` now defaults off (it runs per-frame denoising; on-by-default made a first-run Extract surprisingly slow)
+  - README: documented `--keep-video`, noted that keyframe mode bypasses quality/blur/watermark/filters, and noted the CLI (`interval`) vs GUI (`scene`) default-method difference
+  - Known remaining limitation (not changed): resume in parallel mode tracks a count of out-of-order completions, so it remains approximate
+- **Previous (July 2026 launcher UX)**: Startup script usability pass:
   - Reordered the menu around actual usage: `[1] Launch GUI` and `[2] Check for Updates` on top, first-time-only steps (`[3]` Initial Setup, `[4]` Deno, `[5]` FFmpeg) grouped under a "First-time setup" divider, help/exit last
   - Merged "Update yt-dlp" into `[2] Check for Updates`, which now `git pull --ff-only`s the tool's own code *and* upgrades yt-dlp in one step (git step runs last so the launcher is only rewritten right before control returns)
   - Update step degrades gracefully: skips the git pull with guidance when git is missing or the folder is a ZIP download (no `.git`), skips yt-dlp when no venv, and reports cleanly on `--ff-only` failure (local changes / network) without touching files

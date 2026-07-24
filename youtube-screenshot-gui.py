@@ -173,7 +173,7 @@ class YouTubeScreenshotGUI:
         self.png_var = tk.BooleanVar(value=False)
         self.verbose_var = tk.BooleanVar(value=False)
         self.gradfun_var = tk.BooleanVar(value=False)
-        self.deblock_var = tk.BooleanVar(value=True)
+        self.deblock_var = tk.BooleanVar(value=False)  # Off by default: runs per-frame denoising (slow)
         self.deband_var = tk.BooleanVar(value=False)
         # YouTube authentication options
         self.cookies_from_browser_var = tk.StringVar(value="")
