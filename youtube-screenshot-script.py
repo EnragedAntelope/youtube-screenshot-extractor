@@ -407,28 +407,45 @@ def detect_watermark(frame, threshold):
 
     return False
 
-def apply_filters(frame, gradfun, deblock, deband, verbose):
+def apply_filters(frame, gradfun, deblock, deband, verbose, ffmpeg_available=True):
     filters_failed = []
 
-    if gradfun:
-        original_frame = frame.copy()
-        frame = apply_ffmpeg_filter(frame, 'gradfun=1.2:8', verbose)
-        if np.array_equal(original_frame, frame):
-            filters_failed.append('gradfun')
-
+    # Deblock is pure OpenCV - no FFmpeg needed.
     if deblock:
         frame = cv2.fastNlMeansDenoisingColored(frame, None, 10, 10, 7, 21)
 
+    # gradfun and deband both run through FFmpeg. Chain them into a single
+    # invocation so we spawn at most one FFmpeg process per frame rather than one
+    # per filter.
+    ffmpeg_chain = []
+    if gradfun:
+        ffmpeg_chain.append('gradfun=1.2:8')
     if deband:
-        original_frame = frame.copy()
-        frame = apply_ffmpeg_filter(frame, 'deband', verbose)
-        if np.array_equal(original_frame, frame):
-            filters_failed.append('deband')
+        ffmpeg_chain.append('deband')
+
+    if ffmpeg_chain:
+        requested = [name for name, on in (('gradfun', gradfun), ('deband', deband)) if on]
+        if not ffmpeg_available:
+            filters_failed.extend(requested)
+        else:
+            filtered = apply_ffmpeg_filter(frame, ','.join(ffmpeg_chain), verbose)
+            if filtered is None:
+                # FFmpeg failed; the chained filters are applied together, so
+                # report all of them as failed.
+                filters_failed.extend(requested)
+            else:
+                frame = filtered
 
     return frame, filters_failed
 
 
 def apply_ffmpeg_filter(frame, filter_string, verbose):
+    """Run an FFmpeg ``-vf`` filter chain on a single BGR frame.
+
+    Returns the filtered frame, or ``None`` if FFmpeg failed (missing binary,
+    non-zero exit, or unreadable output) so callers can report the failure
+    instead of silently keeping the unfiltered frame.
+    """
     temp_in_name = None
     temp_out_name = None
     try:
@@ -444,18 +461,17 @@ def apply_ffmpeg_filter(frame, filter_string, verbose):
         try:
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True,
                           creationflags=_get_subprocess_flags())
-            result = cv2.imread(temp_out_name)
-            return result if result is not None else frame
+            return cv2.imread(temp_out_name)  # None if the output couldn't be read
         except subprocess.CalledProcessError as e:
             if verbose:
                 print(f"Error running FFmpeg command: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
                 print(f"Error output: {e.stderr}")
-            return frame
+            return None
         except FileNotFoundError:
             if verbose:
                 print(f"Error: FFmpeg not found. Command attempted: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
                 print("Please ensure FFmpeg is installed and in your system PATH.")
-            return frame
+            return None
     finally:
         # Clean up temporary files
         if temp_in_name and os.path.exists(temp_in_name):
@@ -464,7 +480,8 @@ def apply_ffmpeg_filter(frame, filter_string, verbose):
             os.unlink(temp_out_name)
 
 def process_frame(args):
-    frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks, watermark_threshold, use_png, gradfun, deblock, deband, verbose = args
+    (frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks,
+     watermark_threshold, use_png, gradfun, deblock, deband, verbose, ffmpeg_available) = args
 
     quality_score = calculate_quality_score(frame)
     laplacian_var = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
@@ -476,7 +493,7 @@ def process_frame(args):
     if quality_check and blur_check:
         filters_failed = []
         if gradfun or deblock or deband:
-            frame, filters_failed = apply_filters(frame, gradfun, deblock, deband, verbose)
+            frame, filters_failed = apply_filters(frame, gradfun, deblock, deband, verbose, ffmpeg_available)
 
         frame = remove_black_bars(frame)
 
@@ -531,6 +548,43 @@ def detect_scene_frames(video_path, fast_scene=False, verbose=False):
         safe_print("No scene changes detected; treating the video as a single scene.")
         return [0]
     return [scene[0].frame_num for scene in scene_list]
+
+
+class _ProgressTracker:
+    """Fold out-of-order frame completions into a contiguous prefix.
+
+    Under parallel processing, frame tasks finish out of order. A plain "count of
+    completed frames" is therefore NOT a safe resume point: frame N may still be
+    in flight while later frames have finished, so skipping the first N frames on
+    resume could drop frame N entirely.
+
+    This tracker instead advances ``resume_point`` only across a contiguous run of
+    completed frame indices, so every index below ``resume_point`` is guaranteed
+    done. Saved/skipped tallies are folded in the same contiguous order, keeping
+    the persisted counts consistent with the resume point (no double-counting of
+    the frames re-processed after a resume).
+    """
+
+    def __init__(self, start_at=0, saved=0, skipped=0):
+        self.resume_point = start_at
+        self.saved = saved
+        self.skipped = skipped
+        self._pending = {}  # count -> was_saved, for done-but-not-yet-contiguous frames
+
+    def record(self, count, was_saved):
+        self._pending[count] = was_saved
+        while self.resume_point in self._pending:
+            if self._pending.pop(self.resume_point):
+                self.saved += 1
+            else:
+                self.skipped += 1
+            self.resume_point += 1
+
+    @property
+    def processed(self):
+        # After a complete run every frame is contiguous, so this equals the
+        # total number of frames reached.
+        return self.resume_point
 
 
 def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=12, blur_threshold=10, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
@@ -608,12 +662,12 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                         count += 1
                 frame_number += 1
 
-    skipped_frames = 0
-    saved_frames = 0
-    processed_frames = 0
     start_at = 0
+    saved_frames = 0
+    skipped_frames = 0
     all_filters_failed = set()  # Track which filters failed across all frames
     progress_file = os.path.join(output_folder, "progress.json")
+    ffmpeg_available = check_ffmpeg()  # Checked once; passed to workers instead of per-frame
 
     if resume and os.path.exists(progress_file):
         with open(progress_file, "r") as f:
@@ -621,66 +675,64 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         start_at = progress.get("processed_frames", 0)
         skipped_frames = progress.get("skipped_frames", 0)
         saved_frames = progress.get("saved_frames", 0)
-        processed_frames = start_at
         safe_print(f"Resuming: skipping first {start_at} already-processed frames.")
+
+    tracker = _ProgressTracker(start_at, saved_frames, skipped_frames)
 
     def save_progress():
         if resume:
             with open(progress_file, "w") as f:
                 json.dump({
-                    "processed_frames": processed_frames,
-                    "skipped_frames": skipped_frames,
-                    "saved_frames": saved_frames,
+                    "processed_frames": tracker.resume_point,
+                    "skipped_frames": tracker.skipped,
+                    "saved_frames": tracker.saved,
                 }, f)
 
-    def handle_result(future_or_result):
-        nonlocal saved_frames, skipped_frames, processed_frames
+    def make_task_args(frame, count):
+        return (frame, output_folder, count, quality_threshold, blur_threshold,
+                detect_watermarks, watermark_threshold, use_png,
+                gradfun, deblock, deband, verbose, ffmpeg_available)
+
+    def handle_result(count, future_or_result):
         try:
             result, saved, filters_failed = (
                 future_or_result.result() if hasattr(future_or_result, 'result') else future_or_result
             )
         except Exception as e:
-            safe_print(f"Error processing frame: {e}")
-            skipped_frames += 1
-            processed_frames += 1
+            safe_print(f"Error processing frame {count}: {e}")
+            tracker.record(count, False)  # Errored frame counts as done (skipped)
+            save_progress()
             return
         safe_print(result)
-        if saved:
-            saved_frames += 1
-        else:
-            skipped_frames += 1
-        processed_frames += 1
+        tracker.record(count, saved)
         all_filters_failed.update(filters_failed)
         save_progress()
 
-    with tqdm(total=expected_total, disable=not verbose) as pbar:
+    with tqdm(total=expected_total, initial=start_at, disable=not verbose) as pbar:
         if use_parallel:
             max_in_flight = (os.cpu_count() or 4) * 2
             with ThreadPoolExecutor() as executor:
                 in_flight = set()
+                future_count = {}  # future -> count, so we know the index even on error
                 for frame, count in frame_generator():
                     if count < start_at:
                         continue
-                    task_args = (frame, output_folder, count, quality_threshold, blur_threshold,
-                                 detect_watermarks, watermark_threshold, use_png,
-                                 gradfun, deblock, deband, verbose)
-                    in_flight.add(executor.submit(process_frame, task_args))
+                    fut = executor.submit(process_frame, make_task_args(frame, count))
+                    future_count[fut] = count
+                    in_flight.add(fut)
                     if len(in_flight) >= max_in_flight:
                         done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                         for future in done:
-                            handle_result(future)
+                            handle_result(future_count.pop(future), future)
                             pbar.update(1)
                 for future in as_completed(in_flight):
-                    handle_result(future)
+                    handle_result(future_count.pop(future), future)
                     pbar.update(1)
         else:
             for frame, count in frame_generator():
                 if count < start_at:
                     continue
-                task_args = (frame, output_folder, count, quality_threshold, blur_threshold,
-                             detect_watermarks, watermark_threshold, use_png,
-                             gradfun, deblock, deband, verbose)
-                handle_result(process_frame(task_args))
+                handle_result(count, process_frame(make_task_args(frame, count)))
                 pbar.update(1)
 
     video.release()
@@ -690,7 +742,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
     if resume and os.path.exists(progress_file):
         os.unlink(progress_file)
 
-    return processed_frames, skipped_frames, saved_frames, all_filters_failed
+    return tracker.processed, tracker.skipped, tracker.saved, all_filters_failed
 
 def generate_thumbnail(output_folder):
     frames = [f for f in os.listdir(output_folder) if f.endswith('.jpg') or f.endswith('.png')]

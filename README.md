@@ -64,7 +64,7 @@ Then install Deno and FFmpeg as shown above.
 python youtube-screenshot-gui.py
 ```
 
-Every option is exposed with a tooltip, sensible defaults are pre-selected, and a live output log shows progress.
+Every option is exposed with a tooltip, sensible defaults are pre-selected, and a live output log shows progress. The **YouTube Authentication** section also carries an advanced *Extractor Args* field (e.g. `youtube:player_client=mweb`) for the rare cases where yt-dlp needs a specific client.
 
 ### Command line
 
@@ -112,7 +112,7 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 | `--cookies-from-browser` | Use cookies from a browser (firefox, chrome, edge...) | none |
 | `--cookies` | Path to a cookies file (Netscape format) | none |
 | `--sleep-requests` | Delay in seconds between requests | 0 |
-| `--extractor-args` | Additional yt-dlp extractor arguments | none |
+| `--extractor-args` | Additional yt-dlp extractor args, `EXTRACTOR:ARG=VALUE` (repeatable) | none |
 
 ## Output
 

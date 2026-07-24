@@ -28,8 +28,13 @@ This document details the implementation of YouTube anti-download measures suppo
 
 #### New UI Section: "YouTube Authentication (Optional)"
 - Browser cookie selector dropdown (firefox, chrome, edge, safari)
+- Cookies-file browse field (alternative to browser cookies)
 - Rate limiting spinner control (0-60 seconds)
+- Extractor-args entry field (advanced, e.g. `youtube:player_client=mweb`)
 - Tooltips explaining each option
+
+#### Other controls:
+- Watermark-threshold spinbox (0-1) next to the "Detect watermarks" checkbox
 
 #### Modified `_build_command()`:
 - Added logic to include authentication arguments in command generation
@@ -88,7 +93,8 @@ The `mweb` client is currently the most reliable for YouTube downloads. Users ca
 ## Dependencies
 
 No new Python dependencies required. The implementation uses:
-- `yt-dlp>=2026.3.17` (already specified in requirements.txt)
+- `yt-dlp[default]>=2026.7.4` (as specified in requirements.txt; keep this note and
+  `requirements.txt` in sync when bumping)
 - Standard yt-dlp options for cookies and rate limiting
 
 ## Testing Recommendations
@@ -98,6 +104,13 @@ No new Python dependencies required. The implementation uses:
 3. **Rate limiting**: Test with `--sleep-requests 5`
 4. **Error handling**: Test with invalid URLs, private videos
 5. **GUI**: Verify all new UI controls work correctly
+6. **Local-file paths (no network needed)**: most of the frame pipeline can be
+   exercised against a short local video — interval/scene extraction, `--resume`
+   (interrupt then re-run), `--png`, `--thumbnail`, and the filter flags. Running
+   without FFmpeg on PATH is a useful negative test: `--gradfun`/`--deband` must
+   report "FAILED" and still exit 0, while `--deblock` (pure OpenCV) still applies.
+7. **`--extractor-args` format**: compare `parse_extractor_args()` output against
+   yt-dlp's own parser (`yt_dlp.options.create_parser()`) — they must match exactly.
 
 ## Future Considerations
 
@@ -115,14 +128,16 @@ No new Python dependencies required. The implementation uses:
 
 ## Version History
 
-- **Current (July 2026 audit follow-up)**: Second audit pass, fixing issues the prior audit missed:
-  - Fixed `--extractor-args` (was parsed into a flat `{ie: 'k=v'}` dict and passed to yt-dlp, which expects the nested `{ie: {arg: [values]}}` form — the documented `youtube:player_client=mweb` example would raise `AttributeError` inside yt-dlp). Now parsed via `parse_extractor_args()` matching yt-dlp's CLI grammar; the flag accepts repetition (`action='append'`)
+- **Current (July 2026 audit follow-up)**: Second audit pass, fixing issues the prior audit missed. All items below were validated against real dependencies (yt-dlp 2026.07.04, OpenCV 5.0) with end-to-end extraction runs:
+  - Fixed `--extractor-args`: it was parsed into a flat `{ie: 'k=v'}` dict, but yt-dlp expects the nested `{ie: {arg: [values]}}` form. yt-dlp reads this via `traverse_obj`, which returns `None` on the type mismatch instead of raising — so **the flag was silently ignored**, exactly like the `--cookies`/`--sleep-requests` bugs the previous audit fixed. Now parsed by `parse_extractor_args()`, verified to produce byte-identical output to yt-dlp's own CLI parser (`yt_dlp.options.create_parser`); the flag also accepts repetition (`action='append'`)
+  - **Fixed `--resume` correctness under parallel processing.** Progress was tracked as a count of *completed* frames, but under the thread pool frames complete out of order, so that count was not a contiguous prefix — a resumed run could skip frames that had never been processed. Added `_ProgressTracker`, which advances the resume point only across a contiguous run of completed indices and folds saved/skipped tallies in the same order (no double-counting across a resume). Verified with randomised out-of-order tests asserting the prefix invariant, plus an end-to-end interrupted-and-resumed run
+  - `gradfun` + `deband` are now chained into a **single** FFmpeg invocation per frame instead of one process (plus a PNG round-trip) per filter. FFmpeg availability is checked once per extraction rather than per frame, and filter failure is now detected via the return value rather than comparing pixels — a filter that legitimately produced an identical frame is no longer misreported as failed
   - Downloaded source video is now deleted after extraction (URL inputs only; never local files) with a `--keep-video` opt-out — previously every YouTube run left a full-size `downloaded_video_*.mp4` behind
-  - Clamped the `contrast` term in `calculate_quality_score` to [0,1] like the other components (was unbounded, inflating scores of high-contrast frames on the 0-100 scale)
+  - Clamped the `contrast` term in `calculate_quality_score` to [0,1] like the other components. It was unbounded (`std/mean`), so a mostly-black frame with a small bright patch scored a **perfect 100** and passed any quality threshold; it now scores ~22. Frames whose contrast was already in range are unaffected
+  - GUI: `deblock` now defaults off (it runs per-frame denoising; on-by-default made a first-run Extract surprisingly slow); added an **Extractor Args** field and a **watermark-threshold** spinbox (previously pinned to the 0.8 default with no control)
+  - `start.sh`: the menu now runs in a `while true` loop; each action returns instead of recursing back into `show_menu`, so the call stack no longer grows with every selection
   - `.gitignore` now excludes run artifacts (`downloaded_video_*.mp4`, `screenshots_*/`, `progress.json`)
-  - GUI `deblock` now defaults off (it runs per-frame denoising; on-by-default made a first-run Extract surprisingly slow)
   - README: documented `--keep-video`, noted that keyframe mode bypasses quality/blur/watermark/filters, and noted the CLI (`interval`) vs GUI (`scene`) default-method difference
-  - Known remaining limitation (not changed): resume in parallel mode tracks a count of out-of-order completions, so it remains approximate
 - **Previous (July 2026 launcher UX)**: Startup script usability pass:
   - Reordered the menu around actual usage: `[1] Launch GUI` and `[2] Check for Updates` on top, first-time-only steps (`[3]` Initial Setup, `[4]` Deno, `[5]` FFmpeg) grouped under a "First-time setup" divider, help/exit last
   - Merged "Update yt-dlp" into `[2] Check for Updates`, which now `git pull --ff-only`s the tool's own code *and* upgrades yt-dlp in one step (git step runs last so the launcher is only rewritten right before control returns)

@@ -179,6 +179,7 @@ class YouTubeScreenshotGUI:
         self.cookies_from_browser_var = tk.StringVar(value="")
         self.cookies_file_var = tk.StringVar(value="")
         self.sleep_requests_var = tk.IntVar(value=0)
+        self.extractor_args_var = tk.StringVar(value="")
 
     def _create_section_header(self, parent, text):
         frame = ttk.Frame(parent)
@@ -301,8 +302,13 @@ class YouTubeScreenshotGUI:
         row2 = ttk.Frame(self.main_frame)
         row2.pack(fill="x", pady=2)
         wm_cb = ttk.Checkbutton(row2, text="Detect watermarks", variable=self.detect_watermarks_var)
-        wm_cb.pack(side="left", padx=(0, 16))
+        wm_cb.pack(side="left", padx=(0, 4))
         ToolTip(wm_cb, "Mark frames with potential watermarks.")
+
+        wm_thresh = ttk.Spinbox(row2, from_=0.0, to=1.0, increment=0.05, width=5,
+                                textvariable=self.watermark_threshold_var, format="%.2f")
+        wm_thresh.pack(side="left", padx=(0, 16))
+        ToolTip(wm_thresh, "Watermark sensitivity 0-1. Higher = fewer false positives. Default 0.8.")
 
         th_cb = ttk.Checkbutton(row2, text="Thumbnail", variable=self.thumbnail_var)
         th_cb.pack(side="left", padx=(0, 16))
@@ -369,6 +375,14 @@ class YouTubeScreenshotGUI:
         ttk.Spinbox(rate_frame, from_=0, to=60, increment=1,
                     textvariable=self.sleep_requests_var, width=6).pack(side="left", padx=(4, 0))
         ToolTip(rate_frame, "Delay between requests (seconds). Use 3-5 when processing multiple videos to avoid rate limiting. 0 = no delay.")
+
+        # Extractor args row (advanced)
+        ea_frame = ttk.Frame(self.main_frame)
+        ea_frame.pack(fill="x", pady=2)
+        ttk.Label(ea_frame, text="Extractor Args:").pack(side="left")
+        ea_entry = ttk.Entry(ea_frame, textvariable=self.extractor_args_var)
+        ea_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        ToolTip(ea_entry, "Advanced: extra yt-dlp extractor args, e.g. 'youtube:player_client=mweb'. Leave empty if unsure.")
 
     def _create_action_section(self):
         frame = ttk.Frame(self.main_frame)
@@ -478,6 +492,10 @@ class YouTubeScreenshotGUI:
         sleep_requests = self.sleep_requests_var.get()
         if sleep_requests > 0:
             cmd.extend(["--sleep-requests", str(sleep_requests)])
+
+        extractor_args = self.extractor_args_var.get().strip()
+        if extractor_args:
+            cmd.extend(["--extractor-args", extractor_args])
 
         return cmd
 

@@ -43,7 +43,8 @@ print_header() {
     echo ""
 }
 
-# Show main menu
+# Show main menu and dispatch a single choice. Returns to the main loop, which
+# redraws the menu; each action returns rather than recursing into show_menu.
 show_menu() {
     print_header
     echo "  [1] Launch GUI"
@@ -82,7 +83,6 @@ show_menu() {
         *)
             print_message "$RED" "  Invalid choice. Please try again."
             sleep 2
-            show_menu
             ;;
     esac
 }
@@ -108,7 +108,6 @@ initial_setup() {
         fi
         echo ""
         read -p "Press Enter to continue..."
-        show_menu
         return
     fi
 
@@ -124,7 +123,6 @@ initial_setup() {
         if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
             print_message "$YELLOW" "  Setup skipped."
             sleep 2
-            show_menu
             return
         fi
     else
@@ -133,7 +131,6 @@ initial_setup() {
         if [ $? -ne 0 ]; then
             print_message "$RED" "  ERROR: Failed to create virtual environment."
             read -p "Press Enter to continue..."
-            show_menu
             return
         fi
         print_message "$GREEN" "  Virtual environment created."
@@ -159,7 +156,6 @@ initial_setup() {
         print_message "$RED" "  ERROR: Failed to install some dependencies."
         echo "  Check the output above for details."
         read -p "Press Enter to continue..."
-        show_menu
         return
     fi
 
@@ -175,7 +171,6 @@ initial_setup() {
     print_message "$GREEN" "  Then use option [1] to launch the GUI."
     echo ""
     read -p "Press Enter to continue..."
-    show_menu
 }
 
 # Check for updates (tool code via git + yt-dlp)
@@ -247,7 +242,6 @@ update() {
     print_message "$GREEN" "  no restart of this menu needed."
     echo ""
     read -p "Press Enter to continue..."
-    show_menu
 }
 
 # Install Deno
@@ -268,7 +262,6 @@ install_deno() {
         deno --version
         echo ""
         read -p "Press Enter to continue..."
-        show_menu
         return
     fi
 
@@ -291,7 +284,6 @@ install_deno() {
                 if ! command -v brew &> /dev/null; then
                     print_message "$RED" "  Homebrew not found. Install from https://brew.sh"
                     read -p "Press Enter to continue..."
-                    show_menu
                     return
                 fi
                 print_message "$GREEN" "  Installing Deno via Homebrew..."
@@ -307,7 +299,6 @@ install_deno() {
             *)
                 print_message "$YELLOW" "  Installation skipped."
                 read -p "Press Enter to continue..."
-                show_menu
                 return
                 ;;
         esac
@@ -341,7 +332,6 @@ install_deno() {
     print_message "$YELLOW" "  (or close and reopen terminal)."
     echo ""
     read -p "Press Enter to continue..."
-    show_menu
 }
 
 # Install FFmpeg
@@ -365,7 +355,6 @@ install_ffmpeg() {
         ffmpeg -version | head -n 1
         echo ""
         read -p "Press Enter to continue..."
-        show_menu
         return
     fi
 
@@ -387,7 +376,6 @@ install_ffmpeg() {
             if ! command -v brew &> /dev/null; then
                 print_message "$RED" "  Homebrew not found. Install from https://brew.sh"
                 read -p "Press Enter to continue..."
-                show_menu
                 return
             fi
             print_message "$GREEN" "  Installing FFmpeg via Homebrew..."
@@ -438,7 +426,6 @@ install_ffmpeg() {
     fi
     echo ""
     read -p "Press Enter to continue..."
-    show_menu
 }
 
 # Launch GUI
@@ -452,7 +439,6 @@ launch_gui() {
         echo "  Please run Initial Setup first - option 3."
         echo ""
         read -p "Press Enter to continue..."
-        show_menu
         return
     fi
 
@@ -464,7 +450,6 @@ launch_gui() {
     print_message "$GREEN" "  GUI launched in the background."
     echo ""
     sleep 2
-    show_menu
 }
 
 # Launch help
@@ -476,7 +461,6 @@ launch_help() {
         echo "  Please run Initial Setup first - option 3."
         echo ""
         read -p "Press Enter to continue..."
-        show_menu
         return
     fi
 
@@ -504,7 +488,6 @@ launch_help() {
     echo "    python youtube-screenshot-script.py \"URL\" --sleep-requests 5"
     echo ""
     read -p "Press Enter to continue..."
-    show_menu
 }
 
 # Main script
@@ -522,5 +505,7 @@ if command -v git &> /dev/null && [ -d ".git" ]; then
     VERDATE=$(git log -1 --format=%cs 2>/dev/null)
 fi
 
-# Run menu loop
-show_menu
+# Run menu loop - each selection returns here and the menu redraws
+while true; do
+    show_menu
+done
