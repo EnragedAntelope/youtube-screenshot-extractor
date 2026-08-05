@@ -66,7 +66,7 @@ python youtube-screenshot-script.py --help
 - **Rate limiting:** guest sessions ~300 videos/hour, authenticated ~2000 videos/hour. Use `--sleep-requests 5` to stay under limits.
 - **Client selection:** `mweb` client is currently most reliable for YouTube (`--extractor-args "youtube:player_client=mweb"`).
 - **Parallel processing:** long videos stream through worker pool instead of loading into RAM (prevents OOM).
-- **Quality filters:** blur detection and quality scoring run automatically; flagged frames have `_blurry` or `_lowquality` suffix.
+- **Quality filters:** blur detection and quality scoring run automatically; frames failing either threshold are skipped, not saved. Only the `_watermarked` suffix is ever added (when --detect-watermarks is used).
 
 ## Security
 
