@@ -4,6 +4,16 @@ Pull clean, high-quality still frames from videos — YouTube, 1000+ other sites
 
 **Deep reference: Previous CLAUDE.md contained implementation notes about YouTube PO Tokens, rate limiting, and authentication — that content is now archived in the project history**
 
+## Current state
+
+_Last verified: 2026-08-08_
+
+- **Status:** working and maintained, no version number and no release tags — `git log` is the only version record. The recent history is a run of audits fixing silently-broken options rather than new features.
+- **Works:** all four extraction methods (interval, every frame, keyframes, scene detection); automatic blur/quality filtering, black-bar cropping and watermark flagging; YouTube authentication via browser cookies plus request-rate throttling; resume for large extractions; parallel worker-pool processing that streams frames instead of loading the whole video; GUI and CLI at parity.
+- **In progress:** nothing — the last commits closed out parallel-resume correctness, FFmpeg filter chaining and exposing previously GUI-hidden options.
+- **Known gaps / next steps:** no test suite and no CI, so every change is verified by hand; **YouTube extraction is inherently fragile** — yt-dlp must be kept current (launcher option 2, or `pip install --upgrade "yt-dlp[default]"`), and the working client selection changes over time; Deno is required for YouTube and FFmpeg for keyframes, so a partial install silently limits which methods work; the rate-limit and client-selection notes in *Conventions & gotchas* are the most perishable content in this file — re-verify them before trusting them.
+- **Deep docs:** none — `README.md` is the user-facing reference. Earlier implementation notes on PO tokens and authentication live only in the git history.
+
 ## Architecture in 60 seconds
 
 - **Any source:** YouTube + 1000+ sites via yt-dlp, or local video files
