@@ -143,6 +143,105 @@ def parse_extractor_args(values):
     return result
 
 
+def _describe_action_type(action):
+    """Human-readable name for what an argparse action accepts."""
+    if action.nargs == 0:
+        return "true or false"
+    if isinstance(action, argparse._AppendAction):
+        return "a string or a list of strings"
+    return {float: "a number", int: "a whole number", str: "a string"}.get(
+        action.type, getattr(action.type, "__name__", "a value")
+    )
+
+
+def _coerce_config_value(parser, path, key, value, action):
+    """Validate one config entry against the option it maps to."""
+    expected = _describe_action_type(action)
+
+    def bad():
+        parser.error(f"Setting '{key}' in {path} must be {expected}, got {value!r}.")
+
+    if action.nargs == 0:  # store_true / store_false
+        if not isinstance(value, bool):
+            bad()
+        return value
+
+    if isinstance(action, argparse._AppendAction):
+        if isinstance(value, str):
+            return [value]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            bad()
+        return value
+
+    # bool is a subclass of int, so float(True) succeeds and would silently turn
+    # a mistyped flag into the number 1.
+    if isinstance(value, bool):
+        bad()
+
+    if action.type is str and not isinstance(value, str):
+        bad()
+
+    if action.type is not None:
+        try:
+            value = action.type(value)
+        except (TypeError, ValueError):
+            bad()
+    elif action.choices is not None and not isinstance(value, str):
+        # Untyped options with choices (--method) are plain strings.
+        bad()
+
+    if action.choices is not None and value not in action.choices:
+        choices = ", ".join(str(c) for c in action.choices)
+        parser.error(f"Setting '{key}' in {path} must be one of: {choices}. Got {value!r}.")
+
+    return value
+
+
+def apply_config_file(parser, path):
+    """Apply a JSON config file as argparse defaults, validating as we go.
+
+    Previously this was a bare ``set_defaults(**json.load(f))``, which accepted
+    anything: a typo became a silently ignored setting, and a wrong type
+    surfaced much later as a traceback from inside the extraction. Check each
+    entry against the parser's own option table instead, so the file is
+    validated in one place with errors that name the offending key.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except OSError as e:
+        parser.error(f"Could not read config file {path}: {e}")
+    except json.JSONDecodeError as e:
+        parser.error(f"Config file {path} is not valid JSON: {e}")
+
+    if not isinstance(config, dict):
+        parser.error(f"Config file {path} must contain a JSON object of settings.")
+
+    # argparse exposes no public option table, so read the actions directly.
+    known = {a.dest: a for a in parser._actions if a.dest not in ("help", "config")}
+
+    validated = {}
+    for key, value in config.items():
+        dest = key.lstrip("-").replace("-", "_")
+        action = known.get(dest)
+        if action is None:
+            # Suggest only what a user could usefully put in a file: not the
+            # positional source, and not options hidden from --help.
+            valid = ", ".join(sorted(
+                d for d, a in known.items()
+                if d != "source" and a.help is not argparse.SUPPRESS
+            ))
+            parser.error(f"Unknown setting '{key}' in config file {path}. Valid settings: {valid}")
+        if dest == "source":
+            parser.error(
+                f"'source' cannot be set from a config file ({path}) - it is a "
+                "positional argument, so pass the URL or file path on the command line."
+            )
+        validated[dest] = _coerce_config_value(parser, path, key, value, action)
+
+    parser.set_defaults(**validated)
+
+
 def sanitize_output_path(path):
     """Sanitize an output path while preserving directory structure.
 
@@ -504,19 +603,29 @@ def process_frame(args):
     (frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks,
      watermark_threshold, use_png, gradfun, deblock, deband, verbose, ffmpeg_available) = args
 
+    # Crop before scoring. Letterbox/pillarbox bars are large flat black regions
+    # that drag down contrast and entropy, so scoring the uncropped frame judged
+    # the bars as much as the picture - and left the filename's scores describing
+    # a frame that was never saved. Watermark detection needs the crop too: its
+    # corner tests are relative to frame.shape, and the real corners of the
+    # picture are the cropped ones.
+    frame = remove_black_bars(frame)
+
     quality_score = calculate_quality_score(frame)
     laplacian_var = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
 
     quality_check = quality_score >= quality_threshold
     blur_check = laplacian_var >= blur_threshold
-    watermark_detected = detect_watermarks and detect_watermark(frame, watermark_threshold)
 
     if quality_check and blur_check:
+        watermark_detected = detect_watermarks and detect_watermark(frame, watermark_threshold)
+
         filters_failed = []
         if gradfun or deblock or deband:
+            # Applied after scoring on purpose: deblock is a denoiser, so it
+            # lowers Laplacian variance by design. Scoring its output would
+            # stamp a "blurrier" number on a frame the filter just improved.
             frame, filters_failed = apply_filters(frame, gradfun, deblock, deband, verbose, ffmpeg_available)
-
-        frame = remove_black_bars(frame)
 
         filename = f"frame_{count:06d}_q{int(quality_score):02d}_b{int(laplacian_var):02d}"
         if watermark_detected:
@@ -569,6 +678,64 @@ def detect_scene_frames(video_path, fast_scene=False, verbose=False):
         safe_print("No scene changes detected; treating the video as a single scene.")
         return [0]
     return [scene[0].frame_num for scene in scene_list]
+
+
+class _StatusReporter:
+    """Progress output tuned to where it is actually going.
+
+    A terminal gets a tqdm bar. When stdout is a pipe it does not: the GUI runs
+    this script as a subprocess and streams it into a Tk text widget, where a
+    bar built from carriage returns renders as thousands of separate lines. That
+    case gets a periodic one-line summary instead.
+
+    Per-frame lines are verbose-only either way. They used to print
+    unconditionally while the bar was verbose-only, which is backwards - an
+    'all'-method run over a few minutes of video emits tens of thousands of
+    them, burying the summary that follows.
+    """
+
+    def __init__(self, total, initial, verbose, summary_interval=2.0):
+        self.verbose = verbose
+        self.is_tty = bool(getattr(sys.stdout, 'isatty', lambda: False)())
+        self.summary_interval = summary_interval
+        self._last_summary = 0.0
+        self._bar = tqdm(total=total, initial=initial, disable=not self.is_tty,
+                         unit="frame")
+
+    @staticmethod
+    def _emit(text):
+        # tqdm.write keeps the bar from being torn apart by interleaved output.
+        try:
+            tqdm.write(text)
+        except UnicodeEncodeError:
+            tqdm.write(text.encode('ascii', 'replace').decode('ascii'))
+
+    def log(self, message):
+        """Report one frame's outcome. Verbose only."""
+        if self.verbose:
+            self._emit(message)
+
+    def advance(self, tracker):
+        self._bar.update(1)
+        if self.is_tty or self.verbose:
+            return
+        now = time.monotonic()
+        if now - self._last_summary < self.summary_interval:
+            return
+        self._last_summary = now
+        self._emit(self.summary_line(tracker))
+
+    def summary_line(self, tracker):
+        total = self._bar.total
+        position = f"{tracker.processed}/{total}" if total else str(tracker.processed)
+        return (f"Progress: {position} frames - "
+                f"{tracker.saved} saved, {tracker.skipped} skipped")
+
+    def close(self, tracker=None):
+        self._bar.close()
+        # One final line for the piped case, which never saw the bar.
+        if tracker is not None and not self.is_tty and not self.verbose:
+            self._emit(self.summary_line(tracker))
 
 
 def load_progress(progress_file):
@@ -630,7 +797,7 @@ class _ProgressTracker:
         return self.resume_point
 
 
-def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=12, blur_threshold=10, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
+def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=30, blur_threshold=50, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
     os.makedirs(output_folder, exist_ok=True)
 
     if method == 'keyframes':
@@ -751,16 +918,18 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                 future_or_result.result() if hasattr(future_or_result, 'result') else future_or_result
             )
         except Exception as e:
+            # Always surfaced: an error is not routine per-frame chatter.
             safe_print(f"Error processing frame {count}: {e}")
             tracker.record(count, False)  # Errored frame counts as done (skipped)
             save_progress()
             return
-        safe_print(result)
+        reporter.log(result)
         tracker.record(count, saved)
         all_filters_failed.update(filters_failed)
         save_progress()
 
-    with tqdm(total=expected_total, initial=start_at, disable=not verbose) as pbar:
+    reporter = _StatusReporter(expected_total, start_at, verbose)
+    try:
         if use_parallel:
             max_in_flight = (os.cpu_count() or 4) * 2
             with ThreadPoolExecutor() as executor:
@@ -776,16 +945,18 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                         done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                         for future in done:
                             handle_result(future_count.pop(future), future)
-                            pbar.update(1)
+                            reporter.advance(tracker)
                 for future in as_completed(in_flight):
                     handle_result(future_count.pop(future), future)
-                    pbar.update(1)
+                    reporter.advance(tracker)
         else:
             for frame, count in frame_generator():
                 if count < start_at:
                     continue
                 handle_result(count, process_frame(make_task_args(frame, count)))
-                pbar.update(1)
+                reporter.advance(tracker)
+    finally:
+        reporter.close(tracker)
 
     video.release()
 
@@ -860,8 +1031,11 @@ Output Filename Syntax:
   frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)
   where:
     NNNNNN: Frame number (zero-padded to 6 digits)
-    XX: Quality score (0-99, higher is better)
+    XX: Quality score (0-100, higher is better)
     YY: Blur score (higher numbers indicate less blur)
+  Both scores are measured on the frame as cropped, before any optional
+  --gradfun/--deblock/--deband filtering (deblock is a denoiser, so it lowers
+  the blur score by design).
     _watermarked: Suffix added if a watermark is detected (when --detect-watermarks is used)
     jpg|png: File extension based on the chosen format
 
@@ -899,6 +1073,8 @@ YouTube Authentication (for age-restricted, private, or PO Token-required videos
    --extractor-args ARGS: Additional yt-dlp extractor arguments (e.g., 'youtube:player_client=mweb')
 
 Note:
+- Per-frame lines are printed only with --verbose. Without it you get a progress
+  bar in a terminal, or a periodic one-line summary when output is piped.
 - Using filters may significantly increase processing time.
 - Choose between gradfun and deband based on your needs:
    - Use gradfun for subtle banding issues or to preserve more detail.
@@ -911,10 +1087,10 @@ Note:
                         help="Frame extraction method (default: interval)")
     parser.add_argument("--interval", type=float, default=5.0,
                         help="Interval between frames in seconds (default: 5.0, only used with 'interval' method)")
-    parser.add_argument("--quality", type=float, default=12.0,
-                        help="Quality threshold for frame selection (0-100, default: 12.0)")
-    parser.add_argument("--blur", type=float, default=10.0,
-                        help="Blur threshold for frame selection (default: 10.0)")
+    parser.add_argument("--quality", type=float, default=30.0,
+                        help="Quality threshold for frame selection (0-100, higher is stricter, default: 30.0)")
+    parser.add_argument("--blur", type=float, default=50.0,
+                        help="Blur threshold for frame selection (higher allows less blur, default: 50.0)")
     parser.add_argument("--detect-watermarks", action="store_true",
                         help="Enable basic watermark detection")
     parser.add_argument("--watermark-threshold", type=float, default=0.8,
@@ -961,9 +1137,8 @@ Note:
     args = parser.parse_args()
 
     if args.config:
-        with open(args.config, 'r') as f:
-            config = json.load(f)
-        parser.set_defaults(**config)
+        # Re-parse so explicit command-line flags still win over the file.
+        apply_config_file(parser, args.config)
         args = parser.parse_args()
 
     if args.quality < 0 or args.quality > 100:

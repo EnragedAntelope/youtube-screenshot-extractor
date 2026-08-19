@@ -100,8 +100,8 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 |--------|-------------|---------|
 | `--method` | `interval`, `all`, `keyframes`, or `scene` | interval |
 | `--interval` | Seconds between frames (interval method only) | 5.0 |
-| `--quality` | Quality threshold 0-100 (higher = stricter) | 12.0 |
-| `--blur` | Blur threshold (higher = less blur allowed) | 10.0 |
+| `--quality` | Quality threshold 0-100 (higher = stricter) | 30.0 |
+| `--blur` | Blur threshold (higher = less blur allowed) | 50.0 |
 | `--max-resolution` | Limit download quality (e.g., 720, 1080) | best |
 | `--output` | Custom output folder name | auto |
 | `--png` | Save as PNG instead of JPG | JPG |
@@ -111,10 +111,10 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 | `--resume` | Resume an interrupted extraction | off |
 | `--thumbnail` | Generate a 3x3 thumbnail montage | off |
 | `--keep-video` | Keep the downloaded source video (deleted after extraction by default) | off |
-| `--verbose` | Detailed logging | off |
+| `--verbose` | Log every frame individually (otherwise a progress bar / periodic summary) | off |
 | `--dry-run` | Preview without downloading or processing | off |
 | `--disable-parallel` | Process frames one at a time | off |
-| `--config` | Load settings from a JSON file | none |
+| `--config` | Load settings from a JSON file (keys match the option names; command-line flags still win) | none |
 | `--gradfun` | Reduce color banding (subtle) | off |
 | `--deblock` | Reduce compression artifacts | off |
 | `--deband` | Reduce color banding (aggressive) | off |
@@ -127,17 +127,23 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 
 Frames are saved as `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`:
 - `NNNNNN` — frame number
-- `XX` — quality score (0-99, higher is better)
+- `XX` — quality score (0-100, higher is better)
 - `YY` — blur score (higher = sharper)
 - `_watermarked` — present if a watermark was detected
+
+Both scores describe the frame **as cropped**, so they match the image on disk. They are measured before any optional `--gradfun`/`--deblock`/`--deband` filtering, because `--deblock` is a denoiser and lowers the blur score by design.
+
+### Progress output
+
+By default a terminal gets a progress bar, and piped output (including the GUI's log) gets a one-line summary every couple of seconds. Pass `--verbose` for a line per frame with its scores and skip reason — useful when tuning thresholds, but an `--method all` run over a few minutes of video emits tens of thousands of them.
 
 ## Tips
 
 - **Speed**: `keyframes` is fastest, `scene` finds natural cuts, `interval`/`all` can be slow on long videos.
 - **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, post-processing filters, `--png`, or `--resume` — those only apply to the other methods. Output is always JPEG.
-- **Default method**: the CLI defaults to `interval`; the GUI defaults to `scene` (a better starting point for most videos).
+- **Default method**: the CLI defaults to `interval`; the GUI defaults to `scene` (a better starting point for most videos). Quality and blur thresholds are the same in both.
 - **Downloaded videos are deleted after extraction** by default. Pass `--keep-video` (or tick *Keep video* in the GUI) to retain the source file.
-- **Quality tuning**: start with `--quality 30 --blur 50` and adjust from there.
+- **Quality tuning**: the defaults (`--quality 30 --blur 50`) are a middle ground shared by the CLI and GUI. Raise toward `50`/`100` to be pickier, lower toward `12`/`10` to keep almost everything. Run with `--verbose` to see each frame's scores while tuning.
 - **Long videos**: use `--resume` and cap resolution with `--max-resolution 1080`.
 - **Filters**: `--gradfun` for subtle banding, `--deband` for severe banding — both add processing time.
 - **Other sites**: most of yt-dlp's 1000+ supported sites work out of the box; some may not support every resolution option.
@@ -169,7 +175,7 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5 --max-resolution 72
 | Age-restricted video fails | `--cookies-from-browser firefox`, logged into YouTube in that browser |
 | Rate limited / "content isn't available" | `--sleep-requests 5 --max-resolution 720` |
 | "Format not available" | Remove `--max-resolution`, or try a different source |
-| No frames extracted | Lower thresholds: `--quality 20 --blur 30` |
+| No frames extracted | Lower thresholds: `--quality 20 --blur 30`, and add `--verbose` to see each frame's scores |
 | Keyframe extraction fails | Install FFmpeg and make sure it's on PATH |
 | Scene detection slow/crashes | Use `--fast-scene`, or process shorter segments |
 | False watermark positives | Raise `--watermark-threshold` to 0.9 |

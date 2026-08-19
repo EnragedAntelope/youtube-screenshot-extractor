@@ -191,8 +191,8 @@ class YouTubeScreenshotGUI:
         self.output_var = tk.StringVar()
         self.method_var = tk.StringVar(value="scene")  # Scene detection finds natural cuts
         self.interval_var = tk.DoubleVar(value=5.0)
-        self.quality_var = tk.DoubleVar(value=50.0)
-        self.blur_var = tk.DoubleVar(value=100.0)
+        self.quality_var = tk.DoubleVar(value=30.0)
+        self.blur_var = tk.DoubleVar(value=50.0)
         self.max_resolution_var = tk.StringVar(value="1080")  # Good balance of quality vs speed/rate limits
         self.parallel_var = tk.BooleanVar(value=True)
         self.detect_watermarks_var = tk.BooleanVar(value=True)
@@ -301,23 +301,23 @@ class YouTubeScreenshotGUI:
         q_frame = ttk.Frame(self.main_frame)
         q_frame.pack(fill="x", pady=2)
         ttk.Label(q_frame, text="Quality:", width=8).pack(side="left")
-        self.quality_value_label = ttk.Label(q_frame, text="50", width=3)
+        self.quality_value_label = ttk.Label(q_frame, text="30", width=3)
         self.quality_value_label.pack(side="right")
         ttk.Scale(q_frame, from_=0, to=100, variable=self.quality_var,
                  command=lambda v: self.quality_value_label.config(text=f"{float(v):.0f}")
                  ).pack(side="left", fill="x", expand=True, padx=4)
-        ToolTip(q_frame, "Min quality 0-100. Higher = stricter. Recommended: 30-50")
+        ToolTip(q_frame, "Min quality 0-100. Higher = stricter. Default 30; raise toward 50 to be pickier.")
 
         # Blur slider
         b_frame = ttk.Frame(self.main_frame)
         b_frame.pack(fill="x", pady=2)
         ttk.Label(b_frame, text="Blur:", width=8).pack(side="left")
-        self.blur_value_label = ttk.Label(b_frame, text="100", width=3)
+        self.blur_value_label = ttk.Label(b_frame, text="50", width=3)
         self.blur_value_label.pack(side="right")
         ttk.Scale(b_frame, from_=0, to=500, variable=self.blur_var,
                  command=lambda v: self.blur_value_label.config(text=f"{float(v):.0f}")
                  ).pack(side="left", fill="x", expand=True, padx=4)
-        ToolTip(b_frame, "Min sharpness. Higher = less blur allowed. Recommended: 50-150")
+        ToolTip(b_frame, "Min sharpness. Higher = less blur allowed. Default 50; raise toward 150 to be pickier.")
 
     def _create_options_section(self):
         self._create_section_header(self.main_frame, "Options")
@@ -492,8 +492,8 @@ class YouTubeScreenshotGUI:
         if method == "scene" and self.fast_scene_var.get():
             cmd.append("--fast-scene")
 
-        cmd.extend(["--quality", str(self.quality_var.get())])
-        cmd.extend(["--blur", str(self.blur_var.get())])
+        cmd.extend(["--quality", f"{self.quality_var.get():.0f}"])
+        cmd.extend(["--blur", f"{self.blur_var.get():.0f}"])
 
         output = self.output_var.get().strip()
         if output:
