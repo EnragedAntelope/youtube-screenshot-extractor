@@ -27,7 +27,7 @@ Double-click **`START.bat`**. First time, run in order:
 - **[4] Install Deno** — required for YouTube downloads
 - **[5] Install FFmpeg** — required for keyframe extraction and some filters
 
-Then use **[1] Launch GUI** to start. **[2] Check for Updates** pulls the latest tool code and updates yt-dlp in one step — run it anytime, especially if it's been a while (option [6] shows CLI help).
+Then use **[1] Launch GUI** to start. **[2] Check for Updates** pulls the latest tool code and refreshes yt-dlp and the other dependencies in one step — run it anytime, especially if it's been a while (option [6] shows CLI help).
 
 ### macOS / Linux
 Run **`./start.sh`** — same menu, same steps.
@@ -56,6 +56,15 @@ pip install -r requirements.txt
 ```
 Then install Deno and FFmpeg as shown above.
 
+### Running the tests
+
+```bash
+pip install pytest
+python -m pytest tests -v
+```
+
+The unit tests cover the pure helpers (URL cleaning, extractor-arg parsing, black-bar cropping, resume bookkeeping, montage tiling, yt-dlp option building) and need neither Deno nor FFmpeg.
+
 ## Usage
 
 ### GUI (recommended)
@@ -64,7 +73,7 @@ Then install Deno and FFmpeg as shown above.
 python youtube-screenshot-gui.py
 ```
 
-Every option is exposed with a tooltip, sensible defaults are pre-selected, and a live output log shows progress. The **YouTube Authentication** section also carries an advanced *Extractor Args* field (e.g. `youtube:player_client=mweb`) for the rare cases where yt-dlp needs a specific client.
+Every option is exposed with a tooltip, sensible defaults are pre-selected, and a live output log shows progress. A **Stop** button cancels a running extraction, and only one extraction runs at a time. The **YouTube Authentication** section also carries an advanced *Extractor Args* field (e.g. `youtube:player_client=mweb`) for the rare cases where yt-dlp needs a specific client.
 
 ### Command line
 
@@ -125,9 +134,9 @@ Frames are saved as `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`:
 ## Tips
 
 - **Speed**: `keyframes` is fastest, `scene` finds natural cuts, `interval`/`all` can be slow on long videos.
-- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, or post-processing filters — those only apply to the other methods.
+- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, post-processing filters, `--png`, or `--resume` — those only apply to the other methods. Output is always JPEG.
 - **Default method**: the CLI defaults to `interval`; the GUI defaults to `scene` (a better starting point for most videos).
-- **Downloaded videos are deleted after extraction** by default. Pass `--keep-video` to retain the source file.
+- **Downloaded videos are deleted after extraction** by default. Pass `--keep-video` (or tick *Keep video* in the GUI) to retain the source file.
 - **Quality tuning**: start with `--quality 30 --blur 50` and adjust from there.
 - **Long videos**: use `--resume` and cap resolution with `--max-resolution 1080`.
 - **Filters**: `--gradfun` for subtle banding, `--deband` for severe banding — both add processing time.
@@ -165,6 +174,7 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5 --max-resolution 72
 | Scene detection slow/crashes | Use `--fast-scene`, or process shorter segments |
 | False watermark positives | Raise `--watermark-threshold` to 0.9 |
 | Process dies on large videos | Use `--resume`, check available disk space |
+| Downloads ignore `--max-resolution` | Install FFmpeg — without it only single-stream formats are available, which limits the choice |
 
 ## License
 

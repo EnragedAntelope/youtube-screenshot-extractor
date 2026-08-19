@@ -19,8 +19,26 @@ def check_ffmpeg():
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                       creationflags=creationflags)
         return True
-    except FileNotFoundError:
+    except OSError:
         return False
+
+
+def wheel_steps(event):
+    """Normalise a wheel event into scroll units (positive = scroll down).
+
+    Windows reports multiples of 120 in event.delta, macOS reports small
+    counts, and X11 sends Button-4 (up) / Button-5 (down) with no delta.
+    """
+    if getattr(event, "num", None) == 4:
+        return -1
+    if getattr(event, "num", None) == 5:
+        return 1
+    delta = getattr(event, "delta", 0)
+    if not delta:
+        return 0
+    if abs(delta) >= 120:
+        return int(-delta / 120)
+    return -1 if delta > 0 else 1
 
 
 class ToolTip:
@@ -85,20 +103,29 @@ class ScrollableFrame(ttk.Frame):
         self._check_scrollbar()
 
     def _bind_mousewheel(self, event):
+        # X11 (Linux) reports wheel motion as Button-4/Button-5 rather than
+        # <MouseWheel>, so bind both families or scrolling is dead there.
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
 
     def _unbind_mousewheel(self, event):
         self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
 
     def _on_mousewheel(self, event):
         if not self.scrollbar.winfo_ismapped():
             return
+        steps = wheel_steps(event)
+        if steps == 0:
+            return
         current = self.canvas.yview()
-        if event.delta > 0 and current[0] <= 0:
+        if steps < 0 and current[0] <= 0:
             return
-        if event.delta < 0 and current[1] >= 1:
+        if steps > 0 and current[1] >= 1:
             return
-        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self.canvas.yview_scroll(steps, "units")
 
     def _on_canvas_configure(self, event):
         self.canvas.itemconfig(self.canvas_frame, width=event.width)
@@ -126,10 +153,13 @@ class YouTubeScreenshotGUI:
         # Track output window for reuse
         self.output_window = None
         self.output_text = None
+        # Currently running extraction subprocess, if any
+        self.process = None
 
         try:
             self.root.iconbitmap("icon.ico")
-        except:
+        except tk.TclError:
+            # No icon file, or the platform's Tk does not support .ico files.
             pass
 
         # Configure styles - compact fonts
@@ -171,6 +201,7 @@ class YouTubeScreenshotGUI:
         self.resume_var = tk.BooleanVar(value=False)
         self.thumbnail_var = tk.BooleanVar(value=True)
         self.png_var = tk.BooleanVar(value=False)
+        self.keep_video_var = tk.BooleanVar(value=False)
         self.verbose_var = tk.BooleanVar(value=False)
         self.gradfun_var = tk.BooleanVar(value=False)
         self.deblock_var = tk.BooleanVar(value=False)  # Off by default: runs per-frame denoising (slow)
@@ -315,8 +346,12 @@ class YouTubeScreenshotGUI:
         ToolTip(th_cb, "Generate 3x3 preview montage.")
 
         res_cb = ttk.Checkbutton(row2, text="Resume", variable=self.resume_var)
-        res_cb.pack(side="left")
+        res_cb.pack(side="left", padx=(0, 16))
         ToolTip(res_cb, "Continue from previous extraction.")
+
+        kv_cb = ttk.Checkbutton(row2, text="Keep video", variable=self.keep_video_var)
+        kv_cb.pack(side="left")
+        ToolTip(kv_cb, "Keep the downloaded source video instead of deleting it after extraction. Ignored for local files.")
 
         # Row 3: Filters
         row3 = ttk.Frame(self.main_frame)
@@ -395,8 +430,17 @@ class YouTubeScreenshotGUI:
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(side="right")
 
-        ttk.Button(btn_frame, text="Dry Run", command=self._dry_run, width=10).pack(side="left", padx=(0, 8))
-        ttk.Button(btn_frame, text="Extract", style="Run.TButton", command=self._run, width=10).pack(side="left")
+        self.stop_button = ttk.Button(btn_frame, text="Stop", command=self._stop, width=8,
+                                      state="disabled")
+        self.stop_button.pack(side="left", padx=(0, 8))
+        ToolTip(self.stop_button, "Stop the running extraction. Frames already saved are kept.")
+
+        self.dry_run_button = ttk.Button(btn_frame, text="Dry Run", command=self._dry_run, width=10)
+        self.dry_run_button.pack(side="left", padx=(0, 8))
+
+        self.run_button = ttk.Button(btn_frame, text="Extract", style="Run.TButton",
+                                     command=self._run, width=10)
+        self.run_button.pack(side="left")
 
     def _create_status_bar(self):
         self.status_var = tk.StringVar(value="Ready")
@@ -470,6 +514,8 @@ class YouTubeScreenshotGUI:
             cmd.append("--thumbnail")
         if self.resume_var.get():
             cmd.append("--resume")
+        if self.keep_video_var.get():
+            cmd.append("--keep-video")
         if self.gradfun_var.get():
             cmd.append("--gradfun")
         if self.deblock_var.get():
@@ -500,33 +546,70 @@ class YouTubeScreenshotGUI:
         return cmd
 
     def _run_command(self, cmd, dry_run=False):
+        # One extraction at a time: two runs started by an impatient double-click
+        # would write into the same output folder and interleave their output.
+        if self.process is not None and self.process.poll() is None:
+            messagebox.showinfo("Already running",
+                                "An extraction is already in progress. Wait for it to "
+                                "finish, or press Stop.")
+            return
+
+        self._set_running(True)
+        self.status_var.set("Dry run..." if dry_run else "Processing...")
+        self._create_output_window(dry_run, cmd)
+
         def run():
             try:
-                self.status_var.set("Processing..." if not dry_run else "Dry run...")
                 script_dir = os.path.dirname(os.path.abspath(__file__))
-                
-                # Show output window immediately in main thread
-                self.root.after(0, lambda: self._create_output_window(dry_run, cmd))
-                
+
                 # Create process with unbuffered output
                 env = os.environ.copy()
                 env['PYTHONUNBUFFERED'] = '1'
-                
+
                 process = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, cwd=script_dir, env=env,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                     bufsize=1  # Line buffered
                 )
-                
-                # Start reading output
-                self.root.after(0, lambda: self._start_output_reader(process, dry_run))
+                self.process = process
+                self._read_output(process)
             except Exception as e:
-                self.status_var.set("Error")
-                self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+                # Tk is not thread-safe, so every widget touch from this worker
+                # thread has to be marshalled back onto the main loop.
+                msg = str(e)
+                self.root.after(0, lambda: self._on_process_finished(None, msg))
 
         threading.Thread(target=run, daemon=True).start()
-    
+
+    def _set_running(self, running):
+        state = "disabled" if running else "normal"
+        self.run_button.configure(state=state)
+        self.dry_run_button.configure(state=state)
+        self.stop_button.configure(state="normal" if running else "disabled")
+
+    def _stop(self):
+        process = self.process
+        if process is None or process.poll() is not None:
+            return
+        self.status_var.set("Stopping...")
+        try:
+            process.terminate()
+        except OSError as e:
+            messagebox.showerror("Error", f"Could not stop the extraction: {e}")
+
+    def _on_process_finished(self, returncode, error=None):
+        self.process = None
+        self._set_running(False)
+        if error is not None:
+            self.status_var.set("Error")
+            self._append_output(self.output_text, f"\nError: {error}\n")
+            messagebox.showerror("Error", error)
+            return
+        status = "Complete!" if returncode == 0 else f"Exit code: {returncode}"
+        self.status_var.set(status)
+        self._append_output(self.output_text, f"\n--- {status} ---\n")
+
     def _create_output_window(self, dry_run=False, cmd=None):
         """Create or reuse the output window."""
         # Reuse existing window if it exists and is still open
@@ -557,15 +640,21 @@ class YouTubeScreenshotGUI:
             self.output_text.pack(side="left", fill="both", expand=True)
             scrollbar.config(command=self.output_text.yview)
 
+            def on_wheel(ev):
+                self.output_text.yview_scroll(wheel_steps(ev), "units")
+
             def bind_scroll(e):
-                self.output_text.bind_all("<MouseWheel>", lambda ev: self.output_text.yview_scroll(int(-1*(ev.delta/120)), "units"))
+                for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                    self.output_text.bind_all(seq, on_wheel)
+
             def unbind_scroll(e):
-                self.output_text.unbind_all("<MouseWheel>")
+                for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                    self.output_text.unbind_all(seq)
             self.output_text.bind("<Enter>", bind_scroll)
             self.output_text.bind("<Leave>", unbind_scroll)
 
             def on_close():
-                self.output_text.unbind_all("<MouseWheel>")
+                unbind_scroll(None)
                 self.output_window.destroy()
                 self.output_window = None
                 self.output_text = None
@@ -579,26 +668,22 @@ class YouTubeScreenshotGUI:
                 self._append_output(self.output_text, f"Full command: {' '.join(cmd)}\n\n")
             self._append_output(self.output_text, "Processing... please wait.\n\n")
     
-    def _start_output_reader(self, process, dry_run=False):
-        """Start the output reading thread."""
-        def read_output():
-            try:
-                for line in iter(process.stdout.readline, ''):
-                    if not line:
-                        break
-                    if self.output_text and self.output_text.winfo_exists():
-                        self.root.after(0, lambda l=line: self._append_output(self.output_text, l))
-                
-                process.wait()
-                status = "Complete!" if process.returncode == 0 else f"Exit code: {process.returncode}"
-                self.root.after(0, lambda: self.status_var.set(status))
-                if self.output_text and self.output_text.winfo_exists():
-                    self.root.after(0, lambda: self._append_output(self.output_text, f"\n--- {status} ---\n"))
-            except Exception as e:
-                if self.output_text and self.output_text.winfo_exists():
-                    self.root.after(0, lambda: self._append_output(self.output_text, f"\nError: {e}\n"))
-
-        threading.Thread(target=read_output, daemon=True).start()
+    def _read_output(self, process):
+        """Pump the child's output into the log. Runs on the worker thread."""
+        try:
+            for line in iter(process.stdout.readline, ''):
+                if not line:
+                    break
+                self.root.after(0, lambda l=line: self._append_output(self.output_text, l))
+            process.wait()
+        except Exception as e:
+            msg = str(e)
+            self.root.after(0, lambda: self._on_process_finished(None, msg))
+            return
+        finally:
+            if process.stdout:
+                process.stdout.close()
+        self.root.after(0, lambda: self._on_process_finished(process.returncode))
 
     def _append_output(self, widget, line):
         try:
@@ -621,7 +706,19 @@ class YouTubeScreenshotGUI:
 
 def main():
     root = tk.Tk()
-    YouTubeScreenshotGUI(root)
+    app = YouTubeScreenshotGUI(root)
+
+    def on_quit():
+        # Terminate the child so closing the window does not leave an
+        # extraction running headless with nothing reading its output.
+        if app.process is not None and app.process.poll() is None:
+            try:
+                app.process.terminate()
+            except OSError:
+                pass
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_quit)
     root.mainloop()
 
 

@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # Weekly: dependency advisories land after merge, so re-audit on a timer
+    # rather than only when someone happens to push.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the documented minimum; 3.13 is the current default.
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pyflakes
+
+      - name: Show resolved dependency versions
+        run: pip list
+
+      - name: Lint
+        run: python -m pyflakes youtube-screenshot-script.py youtube-screenshot-gui.py tests
+
+      - name: Byte-compile
+        run: python -m py_compile youtube-screenshot-script.py youtube-screenshot-gui.py
+
+      - name: Unit tests
+        run: python -m pytest tests -v
+
+      - name: Smoke test the CLI end to end
+        run: |
+          ffmpeg -hide_banner -loglevel error -f lavfi \
+            -i "testsrc=size=320x240:rate=10:duration=6" -pix_fmt yuv420p sample.mp4
+          python youtube-screenshot-script.py sample.mp4 \
+            --method interval --interval 1 --quality 0 --blur 0 --thumbnail --output ci-out
+          python youtube-screenshot-script.py sample.mp4 --method scene --quality 0 --blur 0 --output ci-scene
+          python youtube-screenshot-script.py sample.mp4 --method keyframes --output ci-keyframes
+          test -n "$(ls ci-out)" && test -n "$(ls ci-keyframes)"
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      - name: Audit the versions a fresh install resolves to
+        run: pip-audit -r requirements.txt --progress-spinner off
+
+      - name: Audit the declared floors
+        run: |
+          # pip-audit resolves '>=X' to the newest release, so the step above
+          # says nothing about X itself. That gap matters here: pip never
+          # upgrades an already-installed package that still satisfies the
+          # floor, so the floor is what long-lived installs actually run.
+          # Pin each floor to '==X' and audit that instead.
+          python - <<'EOF' > floors.txt
+          import re
+          for line in open("requirements.txt"):
+              line = line.split("#")[0].strip()
+              if not line:
+                  continue
+              m = re.match(r"^([A-Za-z0-9._-]+(?:\[[^\]]+\])?)>=([^,;\s]+)", line)
+              if m:
+                  print(f"{m.group(1)}=={m.group(2)}")
+          EOF
+          cat floors.txt
+          pip-audit -r floors.txt --progress-spinner off
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck the launcher
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck --severity=error start.sh

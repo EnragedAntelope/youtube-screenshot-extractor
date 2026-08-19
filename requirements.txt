@@ -1,6 +1,14 @@
+# Floors are security-relevant: pip will NOT upgrade an already-installed
+# package that still satisfies the floor, so raising these is what actually
+# moves existing checkouts off vulnerable versions.
 yt-dlp[default]>=2026.7.4
-opencv-python>=4.10.0
-numpy>=2.0.0
-Pillow>=11.0.0
+# Upper bound guards against an untested major-version jump (4.x -> 5.x happened
+# silently under the previous unbounded '>=4.10.0'). 5.x is tested and works.
+# The floor is the real release number - there is no opencv-python 4.10.0.
+opencv-python>=4.10.0.84,<6.0.0
+numpy>=2.0.0,<3.0.0
+# 12.3.0 clears 17 known CVEs present in the previous 11.0.0 floor.
+Pillow>=12.3.0
 scenedetect>=0.6.4,<0.8
-tqdm>=4.66.0
+# 4.67.1 clears PYSEC-2026-1976 present in the previous 4.66.0 floor.
+tqdm>=4.67.1

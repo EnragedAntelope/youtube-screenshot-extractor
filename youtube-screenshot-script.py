@@ -11,6 +11,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import json
+from functools import lru_cache
 from tqdm import tqdm
 import time
 import tempfile
@@ -38,12 +39,20 @@ if sys.platform == "win32":
 import yt_dlp
 
 
+@lru_cache(maxsize=1)
 def check_ffmpeg():
+    """Return True if a runnable ffmpeg is on PATH.
+
+    Cached: this is called from several places per run and each miss spawns a
+    process (noticeably slow on Windows). Any OSError - not just a missing
+    binary - means we cannot use FFmpeg, so treat them all as "unavailable"
+    rather than letting them abort the run.
+    """
     try:
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                       creationflags=_get_subprocess_flags())
         return True
-    except FileNotFoundError:
+    except OSError:
         return False
 
 def sanitize_filename(filename):
@@ -197,8 +206,16 @@ def build_ydl_opts(output_path, max_resolution=None, verbose=False, cookies_from
             f'bestvideo[height<={max_resolution}]+bestaudio/best[height<={max_resolution}]/'
             f'bestvideo+bestaudio/best'
         )
+        # Video-only variant, used when FFmpeg is missing and streams cannot be
+        # merged. It still has to honour the resolution cap - dropping it would
+        # silently download the largest stream available.
+        novideo_merge_format_str = (
+            f'bestvideo[height<={max_resolution}]/best[height<={max_resolution}]/'
+            f'bestvideo/best'
+        )
     else:
         format_str = 'bestvideo+bestaudio/best'
+        novideo_merge_format_str = 'bestvideo/best'
 
     ydl_opts = {
         'outtmpl': output_path,
@@ -233,7 +250,7 @@ def build_ydl_opts(output_path, max_resolution=None, verbose=False, cookies_from
 
     if not check_ffmpeg():
         safe_print("Warning: FFmpeg is not installed. Downloading video only without merging audio.")
-        ydl_opts['format'] = 'bestvideo/best'
+        ydl_opts['format'] = novideo_merge_format_str
         ydl_opts['postprocessors'] = []
 
     return ydl_opts
@@ -257,20 +274,23 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
     for attempt in range(max_retries):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                if not verbose:
+                    safe_print("Downloading...")
+                # A single extract_info(download=True) does the metadata fetch and
+                # the download in one pass. Fetching info separately first would
+                # double the requests we make, which works against --sleep-requests
+                # and YouTube's per-hour limits.
+                info = ydl.extract_info(url, download=True)
                 video_title = info.get('title', 'Unknown')
                 if not verbose:
-                    safe_print(f"Downloading: {video_title}...")
-                ydl.download([url])
-                if not verbose:
-                    safe_print("Download complete.")
+                    safe_print(f"Download complete: {video_title}")
             return video_title
         except yt_dlp.utils.DownloadError as e:
             last_error = e
             error_msg = str(e)
             # Check for specific error types and give helpful messages
             if 'Requested format is not available' in error_msg:
-                safe_print(f"Error: The requested video format is not available from this site.")
+                safe_print("Error: The requested video format is not available from this site.")
                 safe_print("This site may not support the selected resolution or format.")
                 safe_print("Try: Remove the resolution limit, or use a different source.")
                 raise
@@ -456,7 +476,8 @@ def apply_ffmpeg_filter(frame, filter_string, verbose):
 
         cv2.imwrite(temp_in_name, frame)
         ffmpeg_cmd = [
-            'ffmpeg', '-i', temp_in_name, '-vf', filter_string, '-y', temp_out_name
+            'ffmpeg', '-hide_banner', '-nostdin', '-y',
+            '-i', temp_in_name, '-vf', filter_string, temp_out_name
         ]
         try:
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True,
@@ -550,6 +571,28 @@ def detect_scene_frames(video_path, fast_scene=False, verbose=False):
     return [scene[0].frame_num for scene in scene_list]
 
 
+def load_progress(progress_file):
+    """Read a resume checkpoint, returning (processed, skipped, saved).
+
+    The progress file is written by an extraction that may have been killed
+    mid-write, and --resume exists precisely for those runs - so a truncated or
+    unreadable file is an expected input, not an exotic one. Fall back to
+    starting over rather than aborting the run with a traceback.
+    """
+    try:
+        with open(progress_file, "r") as f:
+            progress = json.load(f)
+        return (
+            int(progress.get("processed_frames", 0)),
+            int(progress.get("skipped_frames", 0)),
+            int(progress.get("saved_frames", 0)),
+        )
+    except (json.JSONDecodeError, OSError, TypeError, ValueError, AttributeError) as e:
+        safe_print(f"Warning: could not read {progress_file} ({e}).")
+        safe_print("Starting this extraction from the beginning.")
+        return (0, 0, 0)
+
+
 class _ProgressTracker:
     """Fold out-of-order frame completions into a contiguous prefix.
 
@@ -593,13 +636,17 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
     if method == 'keyframes':
         output_pattern = os.path.join(output_folder, "keyframe_%03d.jpg")
         ffmpeg_command = [
-            "ffmpeg", "-i", video_path,
+            "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", video_path,
             "-vf", "select='eq(pict_type,PICT_TYPE_I)'",
             "-fps_mode", "vfr",
             "-q:v", "2",
             output_pattern
         ]
         try:
+            # -y and -nostdin: without them FFmpeg prompts "Overwrite? [y/N]" when
+            # the output folder already holds keyframes from a previous run and
+            # then blocks forever, because stdout/stderr are captured but stdin is
+            # inherited (and there is no console at all under the GUI).
             subprocess.run(ffmpeg_command, check=True, capture_output=True,
                           creationflags=_get_subprocess_flags())
         except subprocess.CalledProcessError as e:
@@ -670,23 +717,28 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
     ffmpeg_available = check_ffmpeg()  # Checked once; passed to workers instead of per-frame
 
     if resume and os.path.exists(progress_file):
-        with open(progress_file, "r") as f:
-            progress = json.load(f)
-        start_at = progress.get("processed_frames", 0)
-        skipped_frames = progress.get("skipped_frames", 0)
-        saved_frames = progress.get("saved_frames", 0)
-        safe_print(f"Resuming: skipping first {start_at} already-processed frames.")
+        start_at, skipped_frames, saved_frames = load_progress(progress_file)
+        if start_at or skipped_frames or saved_frames:
+            safe_print(f"Resuming: skipping first {start_at} already-processed frames.")
 
     tracker = _ProgressTracker(start_at, saved_frames, skipped_frames)
 
     def save_progress():
-        if resume:
-            with open(progress_file, "w") as f:
+        if not resume:
+            return
+        # Write-then-replace: os.replace is atomic, so an interrupt can never
+        # leave a half-written progress file behind for the next --resume run.
+        tmp_path = progress_file + ".tmp"
+        try:
+            with open(tmp_path, "w") as f:
                 json.dump({
                     "processed_frames": tracker.resume_point,
                     "skipped_frames": tracker.skipped,
                     "saved_frames": tracker.saved,
                 }, f)
+            os.replace(tmp_path, progress_file)
+        except OSError as e:
+            safe_print(f"Warning: could not save resume progress: {e}")
 
     def make_task_args(frame, count):
         return (frame, output_folder, count, quality_threshold, blur_threshold,
@@ -765,16 +817,31 @@ def generate_thumbnail(output_folder):
         indices = [int(i * (total - 1) / 8) for i in range(9)]
         selected_frames = [frames[i] for i in indices]
 
-    images = [Image.open(os.path.join(output_folder, f)) for f in selected_frames]
+    # Saved frames do NOT all share one size: remove_black_bars() crops each
+    # frame to its own content, so letterboxed and pillarboxed frames come out
+    # smaller than the rest. Fit every tile into a common cell instead of
+    # assuming the first frame's size, which otherwise leaves the grid ragged
+    # with black gaps and overlapping pastes.
+    cols = min(3, len(selected_frames))
+    rows = (len(selected_frames) + cols - 1) // cols
 
-    width, height = images[0].size
-    # Calculate grid size based on number of images
-    cols = min(3, len(images))
-    rows = (len(images) + cols - 1) // cols
-    thumbnail = Image.new('RGB', (width * cols, height * rows))
+    sizes = []
+    for f in selected_frames:
+        with Image.open(os.path.join(output_folder, f)) as im:
+            sizes.append(im.size)
+    cell_w = max(w for w, _ in sizes)
+    cell_h = max(h for _, h in sizes)
 
-    for i, image in enumerate(images):
-        thumbnail.paste(image, ((i % cols) * width, (i // cols) * height))
+    thumbnail = Image.new('RGB', (cell_w * cols, cell_h * rows), (0, 0, 0))
+
+    for i, f in enumerate(selected_frames):
+        with Image.open(os.path.join(output_folder, f)) as im:
+            tile = im.convert('RGB')
+            # Preserve aspect ratio, then centre the tile inside its cell.
+            tile.thumbnail((cell_w, cell_h), Image.LANCZOS)
+            x = (i % cols) * cell_w + (cell_w - tile.width) // 2
+            y = (i // cols) * cell_h + (cell_h - tile.height) // 2
+            thumbnail.paste(tile, (x, y))
 
     thumbnail.save(os.path.join(output_folder, 'thumbnail_montage.jpg'))
     print(f"Thumbnail montage generated from {len(selected_frames)} frames (of {total} total).")
@@ -942,7 +1009,7 @@ Note:
         # Clean URL - remove playlist params that cause wrong video extraction
         cleaned_url = clean_youtube_url(args.source)
         if cleaned_url != args.source:
-            safe_print(f"Note: Stripped playlist parameters from URL")
+            safe_print("Note: Stripped playlist parameters from URL")
             safe_print(f"  Original: {args.source}")
             safe_print(f"  Cleaned:  {cleaned_url}")
 
@@ -1029,7 +1096,7 @@ Note:
         execution_time = end_time - start_time
         frames_per_second = total_frames / execution_time if execution_time > 0 else 0
 
-        print(f"\nFrame extraction complete.")
+        print("\nFrame extraction complete.")
         print(f"Total execution time: {execution_time:.2f} seconds")
         print(f"Processed {total_frames} frames.")
         print(f"{saved_frames} high-quality frames saved!")

@@ -3,6 +3,12 @@ setlocal enabledelayedexpansion
 title YouTube Screenshot Extractor
 color 0A
 
+REM Every path below (venv, requirements.txt, the Python scripts, the git
+REM checkout) is relative, so the script only works from the repo root. Move
+REM there rather than depending on the caller's working directory - "Run as
+REM administrator", for one, starts in C:\Windows\System32.
+cd /d "%~dp0"
+
 REM Determine the installed version date (only if this is a git checkout)
 set "VERDATE="
 git --version >nul 2>&1
@@ -156,11 +162,16 @@ if not exist "venv" (
     echo  Skipping yt-dlp update: run Initial Setup - option 3 - first.
 ) else (
     call venv\Scripts\activate.bat
-    echo  Checking for yt-dlp updates...
+    echo  Checking for dependency updates...
     echo.
+    REM --upgrade on requirements.txt too, not just yt-dlp: pip leaves an
+    REM already-installed package alone when it still satisfies the floor, so
+    REM security bumps in requirements.txt never reach existing installs
+    REM otherwise.
+    uv pip install --upgrade -r requirements.txt 2>nul || pip install --upgrade -r requirements.txt
     uv pip install --upgrade "yt-dlp[default]" 2>nul || pip install --upgrade "yt-dlp[default]"
     echo.
-    echo  yt-dlp is up to date.
+    echo  Dependencies are up to date.
 )
 echo.
 
