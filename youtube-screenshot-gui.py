@@ -155,6 +155,7 @@ class YouTubeScreenshotGUI:
         self.output_text = None
         # Currently running extraction subprocess, if any
         self.process = None
+        self.stop_requested = False
 
         try:
             self.root.iconbitmap("icon.ico")
@@ -554,6 +555,7 @@ class YouTubeScreenshotGUI:
                                 "finish, or press Stop.")
             return
 
+        self.stop_requested = False
         self._set_running(True)
         self.status_var.set("Dry run..." if dry_run else "Processing...")
         self._create_output_window(dry_run, cmd)
@@ -592,6 +594,7 @@ class YouTubeScreenshotGUI:
         process = self.process
         if process is None or process.poll() is not None:
             return
+        self.stop_requested = True
         self.status_var.set("Stopping...")
         try:
             process.terminate()
@@ -606,7 +609,15 @@ class YouTubeScreenshotGUI:
             self._append_output(self.output_text, f"\nError: {error}\n")
             messagebox.showerror("Error", error)
             return
-        status = "Complete!" if returncode == 0 else f"Exit code: {returncode}"
+        if self.stop_requested:
+            # terminate() surfaces as a negative return code (-SIGTERM); report
+            # what the user actually did rather than "Exit code: -15".
+            status = "Stopped. Frames already saved were kept."
+        elif returncode == 0:
+            status = "Complete!"
+        else:
+            status = f"Exit code: {returncode}"
+        self.stop_requested = False
         self.status_var.set(status)
         self._append_output(self.output_text, f"\n--- {status} ---\n")
 

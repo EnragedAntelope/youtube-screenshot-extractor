@@ -181,6 +181,10 @@ def _coerce_config_value(parser, path, key, value, action):
     if action.type is str and not isinstance(value, str):
         bad()
 
+    # int(5.7) would truncate silently, while the CLI rejects --sleep-requests 5.7.
+    if action.type is int and isinstance(value, float) and not value.is_integer():
+        bad()
+
     if action.type is not None:
         try:
             value = action.type(value)
@@ -205,6 +209,9 @@ def apply_config_file(parser, path):
     surfaced much later as a traceback from inside the extraction. Check each
     entry against the parser's own option table instead, so the file is
     validated in one place with errors that name the offending key.
+
+    Returns the settings for 'append' options, which the caller must apply
+    after parsing - see the comment at the end of this function.
     """
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -239,7 +246,14 @@ def apply_config_file(parser, path):
             )
         validated[dest] = _coerce_config_value(parser, path, key, value, action)
 
-    parser.set_defaults(**validated)
+    # 'append' options are handled by the caller, not set_defaults: argparse's
+    # append action EXTENDS a non-None default rather than replacing it, so a
+    # value from the file would merge with one given on the command line
+    # instead of being overridden by it like every other setting.
+    appends = {d: v for d, v in validated.items()
+               if isinstance(known[d], argparse._AppendAction)}
+    parser.set_defaults(**{d: v for d, v in validated.items() if d not in appends})
+    return appends
 
 
 def sanitize_output_path(path):
@@ -489,6 +503,17 @@ def remove_black_bars(frame, threshold=10):
     A row/column is considered a bar only if every pixel in it is darker
     than the threshold. Returns the frame unchanged if it is entirely black.
     """
+    # Fast path. If all four outermost edges already contain something brighter
+    # than the threshold there is no bar on any side, and the full scan below
+    # would return the frame unchanged - so skip it. This matters because
+    # cropping now runs on every frame (scores have to describe the cropped
+    # image), the full scan costs about as much as the quality scoring itself,
+    # and most video has no bars at all. O(W+H) instead of O(W*H*3).
+    edges = frame[:, :, :3]
+    if (edges[0].max() >= threshold and edges[-1].max() >= threshold
+            and edges[:, 0].max() >= threshold and edges[:, -1].max() >= threshold):
+        return frame
+
     black_mask = (frame[:, :, :3] < threshold).all(axis=2)
 
     content_rows = np.where(~black_mask.all(axis=1))[0]
@@ -957,8 +982,10 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                 reporter.advance(tracker)
     finally:
         reporter.close(tracker)
-
-    video.release()
+        # Release the capture on the error path too, or an interrupted run
+        # keeps the video file open until the interpreter exits - which on
+        # Windows blocks the caller from deleting the downloaded file.
+        video.release()
 
     # Extraction finished successfully - remove the progress file so a future
     # --resume run doesn't skip frames of a new extraction.
@@ -1138,8 +1165,11 @@ Note:
 
     if args.config:
         # Re-parse so explicit command-line flags still win over the file.
-        apply_config_file(parser, args.config)
+        config_appends = apply_config_file(parser, args.config)
         args = parser.parse_args()
+        for dest, value in config_appends.items():
+            if getattr(args, dest) is None:  # nothing given on the command line
+                setattr(args, dest, value)
 
     if args.quality < 0 or args.quality > 100:
         parser.error("Quality threshold must be between 0 and 100.")

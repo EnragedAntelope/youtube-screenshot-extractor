@@ -7,6 +7,7 @@ catches an import-time break against a newly resolved dependency set.
 
 import argparse
 import importlib.util
+import re
 import io as _io
 import json
 import os
@@ -168,21 +169,61 @@ class TestQualityScore:
 
 
 class TestGenerateThumbnail:
-    def test_tiles_frames_of_differing_sizes(self, tmp_path):
-        """remove_black_bars() crops each frame to its own content, so the
-        montage must not assume every frame shares the first frame's size."""
-        rng = np.random.default_rng(2)
-        for i, (h, w) in enumerate([(200, 300), (120, 300), (200, 180), (50, 50)]):
-            arr = rng.integers(0, 255, (h, w, 3), dtype=np.uint8)
-            Image.fromarray(arr).save(tmp_path / f"frame_{i:06d}_q50_b50.jpg")
+    # Distinct, well-separated colours so each tile is identifiable in the montage.
+    TILE_SIZES = [(200, 300), (120, 300), (200, 180), (50, 50)]
+    TILE_COLOURS = [(220, 20, 20), (20, 220, 20), (20, 20, 220), (220, 220, 20)]
 
+    def _write_frames(self, tmp_path):
+        for i, ((h, w), colour) in enumerate(zip(self.TILE_SIZES, self.TILE_COLOURS)):
+            arr = np.zeros((h, w, 3), np.uint8)
+            arr[:, :] = colour
+            # PNG so the source tiles carry no JPEG ringing of their own.
+            Image.fromarray(arr).save(tmp_path / f"frame_{i:06d}_q50_b50.png")
+
+    def test_montage_is_a_grid_of_the_largest_cell(self, tmp_path):
+        self._write_frames(tmp_path)
         yse.generate_thumbnail(str(tmp_path))
-
-        montage = tmp_path / "thumbnail_montage.jpg"
-        assert montage.exists()
-        with Image.open(montage) as im:
+        with Image.open(tmp_path / "thumbnail_montage.jpg") as im:
             # 4 frames -> 3 columns x 2 rows of the largest cell (300x200).
             assert im.size == (900, 400)
+
+    def test_every_cell_centre_holds_its_own_frame(self, tmp_path):
+        """The real defect was placement, not overall size: tiles were pasted at
+        their own dimensions into cells sized from the FIRST frame, so anything
+        smaller left black gaps and anything larger overlapped its neighbour.
+        Checking the centre of each cell is what distinguishes the two."""
+        self._write_frames(tmp_path)
+        yse.generate_thumbnail(str(tmp_path))
+
+        cell_w, cell_h, cols = 300, 200, 3
+        with Image.open(tmp_path / "thumbnail_montage.jpg") as im:
+            montage = im.convert("RGB")
+            for i, expected in enumerate(self.TILE_COLOURS):
+                x = (i % cols) * cell_w + cell_w // 2
+                y = (i // cols) * cell_h + cell_h // 2
+                actual = montage.getpixel((x, y))
+                # Generous tolerance: the montage itself is saved as JPEG.
+                assert all(abs(a - e) <= 40 for a, e in zip(actual, expected)), (
+                    f"cell {i} centre is {actual}, expected roughly {expected}"
+                )
+
+    def test_tiles_keep_their_aspect_ratio(self, tmp_path):
+        """A 50x50 frame must not be stretched to fill a 300x200 cell."""
+        self._write_frames(tmp_path)
+        yse.generate_thumbnail(str(tmp_path))
+        cell_w, cell_h, cols = 300, 200, 3
+        with Image.open(tmp_path / "thumbnail_montage.jpg") as im:
+            montage = im.convert("RGB")
+            # Frame 3 is the square one; its cell is wider than it is tall, so
+            # scaled-to-fit leaves background either side of a 200x200 tile.
+            x0 = (3 % cols) * cell_w
+            y = (3 // cols) * cell_h + cell_h // 2
+            assert montage.getpixel((x0 + 2, y)) != self.TILE_COLOURS[3]
+            assert all(
+                abs(a - e) <= 40
+                for a, e in zip(montage.getpixel((x0 + cell_w // 2, y)),
+                                self.TILE_COLOURS[3])
+            )
 
     def test_no_frames_is_a_no_op(self, tmp_path):
         yse.generate_thumbnail(str(tmp_path))
@@ -290,14 +331,25 @@ class TestConfigFile:
 
         path = tmp_path / "config.json"
         path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
-        yse.apply_config_file(parser, str(path))
-        return parser
+        appends = yse.apply_config_file(parser, str(path))
+        return parser, appends
+
+    @classmethod
+    def _parse(cls, tmp_path, payload, argv):
+        """Apply a config file, then parse argv the way main() does."""
+        parser, appends = cls._apply(tmp_path, payload)
+        args = parser.parse_args(argv)
+        for dest, value in appends.items():
+            if getattr(args, dest) is None:
+                setattr(args, dest, value)
+        return args
 
     def test_valid_values_become_defaults(self, tmp_path):
-        parser = self._apply(
-            tmp_path, {"quality": 42, "method": "scene", "png": True, "output": "shots"}
+        args = self._parse(
+            tmp_path,
+            {"quality": 42, "method": "scene", "png": True, "output": "shots"},
+            ["video.mp4"],
         )
-        args = parser.parse_args(["video.mp4"])
         assert (args.quality, args.method, args.png, args.output) == (
             42.0,
             "scene",
@@ -306,18 +358,45 @@ class TestConfigFile:
         )
 
     def test_command_line_still_wins_over_the_file(self, tmp_path):
-        parser = self._apply(tmp_path, {"quality": 42})
-        assert parser.parse_args(["video.mp4", "--quality", "77"]).quality == 77.0
+        args = self._parse(tmp_path, {"quality": 42}, ["video.mp4", "--quality", "77"])
+        assert args.quality == 77.0
 
     def test_hyphenated_keys_are_accepted(self, tmp_path):
-        parser = self._apply(tmp_path, {"max-resolution": 720})
-        assert parser.parse_args(["video.mp4"]).max_resolution == 720
+        assert self._parse(tmp_path, {"max-resolution": 720}, ["video.mp4"]).max_resolution == 720
 
     def test_append_option_accepts_a_bare_string(self, tmp_path):
-        parser = self._apply(tmp_path, {"extractor-args": "youtube:player_client=mweb"})
-        assert parser.parse_args(["video.mp4"]).extractor_args == [
-            "youtube:player_client=mweb"
-        ]
+        args = self._parse(
+            tmp_path, {"extractor-args": "youtube:player_client=mweb"}, ["video.mp4"]
+        )
+        assert args.extractor_args == ["youtube:player_client=mweb"]
+
+    def test_command_line_replaces_rather_than_extends_an_append_option(self, tmp_path):
+        """argparse's append action EXTENDS a non-None default, so routing the
+        file's value through set_defaults would merge the two instead of
+        letting the command line win like every other setting does."""
+        args = self._parse(
+            tmp_path,
+            {"extractor-args": "youtube:player_client=mweb"},
+            ["video.mp4", "--extractor-args", "youtube:formats=dashy"],
+        )
+        assert args.extractor_args == ["youtube:formats=dashy"]
+
+    def test_repeated_command_line_flags_still_accumulate(self, tmp_path):
+        args = self._parse(
+            tmp_path,
+            {"quality": 42},
+            ["video.mp4", "--extractor-args", "youtube:a=1", "--extractor-args", "youtube:b=2"],
+        )
+        assert args.extractor_args == ["youtube:a=1", "youtube:b=2"]
+
+    def test_non_integral_float_is_rejected_for_an_int_option(self, tmp_path, capsys):
+        """int(5.7) would truncate silently; the CLI rejects --max-resolution 5.7."""
+        with pytest.raises(SystemExit):
+            self._apply(tmp_path, {"max-resolution": 720.5})
+        assert "whole number" in capsys.readouterr().err
+
+    def test_integral_float_is_accepted_for_an_int_option(self, tmp_path):
+        assert self._parse(tmp_path, {"max-resolution": 720.0}, ["video.mp4"]).max_resolution == 720
 
     @pytest.mark.parametrize(
         "payload,expected",
@@ -353,6 +432,12 @@ class TestConfigFile:
         parser = argparse.ArgumentParser()
         with pytest.raises(SystemExit):
             yse.apply_config_file(parser, str(tmp_path / "absent.json"))
+
+    def test_returns_only_append_settings_for_the_caller(self, tmp_path):
+        _, appends = self._apply(
+            tmp_path, {"quality": 42, "extractor-args": "youtube:a=1"}
+        )
+        assert appends == {"extractor_args": ["youtube:a=1"]}
 
 
 class TestStatusReporter:
@@ -487,3 +572,94 @@ class TestDefaults:
         params = inspect.signature(yse.extract_frames).parameters
         assert params["quality_threshold"].default == 30
         assert params["blur_threshold"].default == 50
+
+
+class TestCropFastPath:
+    """remove_black_bars runs on every frame now (scores must describe the
+    cropped image), so it takes a fast path when no edge is a bar. That path
+    must be exactly equivalent to the full scan, not merely close."""
+
+    @staticmethod
+    def _full_scan(frame, threshold=10):
+        """The unconditional implementation, kept here as the oracle."""
+        black_mask = (frame[:, :, :3] < threshold).all(axis=2)
+        rows = np.where(~black_mask.all(axis=1))[0]
+        if rows.size == 0:
+            return frame
+        top, bottom = rows[0], rows[-1]
+        cols = np.where(~black_mask[top:bottom + 1].all(axis=0))[0]
+        if cols.size == 0:
+            return frame
+        return frame[top:bottom + 1, cols[0]:cols[-1] + 1]
+
+    def test_matches_the_full_scan_on_randomised_frames(self):
+        rng = np.random.default_rng(7)
+        for trial in range(400):
+            h, w = rng.integers(2, 50, 2)
+            frame = rng.integers(0, 255, (h, w, 3), dtype=np.uint8)
+            shape = trial % 8
+            if shape == 1:
+                frame[: max(1, h // 3)] = 0
+                frame[-max(1, h // 3):] = 0
+            elif shape == 2:
+                frame[:, : max(1, w // 3)] = 0
+            elif shape == 3:
+                frame[:] = 0
+            elif shape == 4:
+                frame = frame % 12          # values straddling the threshold
+            elif shape == 5:
+                frame[0] = 0                # bar on one side only
+            elif shape == 6:
+                frame[:, -1] = 0
+            elif shape == 7:
+                frame[0] = frame[-1] = 0
+                frame[:, 0] = frame[:, -1] = 0
+
+            fast = yse.remove_black_bars(frame)
+            slow = self._full_scan(frame)
+            assert fast.shape == slow.shape
+            assert np.array_equal(fast, slow)
+
+    def test_frame_with_content_on_every_edge_is_returned_untouched(self):
+        frame = np.full((30, 40, 3), 200, np.uint8)
+        assert yse.remove_black_bars(frame) is frame
+
+    def test_a_single_dark_edge_still_triggers_the_scan(self):
+        frame = np.full((30, 40, 3), 200, np.uint8)
+        frame[0] = 0
+        assert yse.remove_black_bars(frame).shape == (29, 40, 3)
+
+
+class TestGuiCliParity:
+    """The GUI shells out to the CLI, so a flag it emits that the CLI does not
+    accept is a silently broken option - the failure mode this repo keeps
+    hitting. Checked statically because tkinter is not importable everywhere."""
+
+    GUI = REPO_ROOT / "youtube-screenshot-gui.py"
+    CLI = REPO_ROOT / "youtube-screenshot-script.py"
+    # Deliberately CLI-only: --config is a scripting convenience, --use-gpu is
+    # a deprecated no-op hidden from --help.
+    CLI_ONLY = {"--config", "--use-gpu"}
+
+    def _flags(self):
+        gui = set(re.findall(r'"(--[a-z0-9][a-z0-9-]*)"', self.GUI.read_text()))
+        cli = set(
+            re.findall(
+                r'add_argument\(\s*"(--[a-z0-9][a-z0-9-]*)"', self.CLI.read_text()
+            )
+        )
+        return gui, cli
+
+    def test_every_flag_the_gui_emits_is_accepted_by_the_cli(self):
+        gui, cli = self._flags()
+        assert gui, "found no flags in the GUI - the scan pattern has drifted"
+        assert gui - cli == set()
+
+    def test_only_the_known_options_are_cli_only(self):
+        gui, cli = self._flags()
+        assert cli - gui == self.CLI_ONLY
+
+    def test_thresholds_match_between_the_interfaces(self):
+        gui = self.GUI.read_text()
+        assert "self.quality_var = tk.DoubleVar(value=30.0)" in gui
+        assert "self.blur_var = tk.DoubleVar(value=50.0)" in gui

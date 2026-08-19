@@ -88,7 +88,11 @@ jobs:
                   print(f"{m.group(1)}=={m.group(2)}")
           EOF
           cat floors.txt
-          pip-audit -r floors.txt --progress-spinner off
+          # --no-deps: audit exactly these pins with no environment resolution.
+          # Without it pip-audit resolves the floors against the runner's Python,
+          # and an older floor may predate that version's wheels (numpy 2.0.0 has
+          # no cp313 wheel, so it would try to compile numpy from source).
+          pip-audit --no-deps -r floors.txt --progress-spinner off
 
   shellcheck:
     runs-on: ubuntu-latest
