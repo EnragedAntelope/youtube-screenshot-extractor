@@ -33,7 +33,7 @@ detect_os() {
 print_message() {
     local color=$1
     shift
-    echo -e "${color}$@${NC}"
+    echo -e "${color}$*${NC}"
 }
 
 # Print header
