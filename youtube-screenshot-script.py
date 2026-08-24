@@ -875,7 +875,10 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         # stat rather than against a wall-clock instant: two runs seconds apart
         # are indistinguishable by "mtime >= started" once filesystem timestamp
         # granularity is allowed for.
-        keyframe_glob = os.path.join(output_folder, f"keyframe_*.{extension}")
+        # glob.escape: only the '*' below is a pattern. An output folder whose
+        # name contains '[' or ']' would otherwise be read as a character class
+        # and match nothing, silently reporting zero saved.
+        keyframe_glob = os.path.join(glob.escape(output_folder), f"keyframe_*.{extension}")
 
         def stat_keyframes():
             snapshot = {}

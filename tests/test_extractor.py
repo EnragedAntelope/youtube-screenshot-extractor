@@ -886,3 +886,13 @@ class TestKeyframeCounts:
         _, _, first = self._extract(clip, out)
         _, _, second = self._extract(clip, out)
         assert second == first > 0
+
+    def test_folder_name_with_glob_metacharacters(self, tmp_path):
+        """'[' and ']' are legal in a folder name and are what --output gets
+        handed. Unescaped, the scan matches nothing and reports zero saved."""
+        clip = tmp_path / "clip.mp4"
+        self._clip(clip, 3)
+        out = tmp_path / "shots [take 1]"
+        _, _, saved = self._extract(clip, out)
+        assert saved == len(list(out.glob("keyframe_*.jpg")))
+        assert saved > 0
