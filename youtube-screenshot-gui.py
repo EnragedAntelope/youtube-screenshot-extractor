@@ -11,6 +11,7 @@ import subprocess
 import sys
 import os
 import threading
+import time
 
 
 def check_ffmpeg():
@@ -176,6 +177,8 @@ class YouTubeScreenshotGUI:
         # Currently running extraction subprocess, if any
         self.process = None
         self.stop_requested = False
+        # Throttle for @@PROGRESS-driven bar updates (set by the reader thread).
+        self._last_progress_ui = 0.0
 
         try:
             self.root.iconbitmap("icon.ico")
@@ -474,6 +477,10 @@ class YouTubeScreenshotGUI:
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief="sunken",
                                anchor="w", font=("Segoe UI", 9), padding=(4, 2))
         status_bar.pack(side="bottom", fill="x")
+        # Indeterminate until the CLI reports frame counts; hidden when idle.
+        self.progress_bar = ttk.Progressbar(self.root, mode="indeterminate")
+        self.progress_bar.pack(side="bottom", fill="x", padx=8, pady=(3, 0))
+        self.progress_bar.pack_forget()
 
     def _on_method_change(self):
         method = self.method_var.get()
@@ -583,6 +590,7 @@ class YouTubeScreenshotGUI:
 
         self.stop_requested = False
         self._set_running(True)
+        self._start_progress_bar()
         self.status_var.set("Dry run..." if dry_run else "Processing...")
         self._create_output_window(dry_run, cmd)
 
@@ -593,6 +601,9 @@ class YouTubeScreenshotGUI:
                 # Create process with unbuffered output
                 env = os.environ.copy()
                 env['PYTHONUNBUFFERED'] = '1'
+                # Ask the CLI for @@PROGRESS machine lines (parsed and stripped
+                # by the reader thread) to drive the determinate progress bar.
+                env['YSE_PROGRESS'] = '1'
 
                 process = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -630,6 +641,8 @@ class YouTubeScreenshotGUI:
     def _on_process_finished(self, returncode, error=None):
         self.process = None
         self._set_running(False)
+        self.progress_bar.stop()
+        self.progress_bar.pack_forget()
         if error is not None:
             self.status_var.set("Error")
             self._append_output(self.output_text, f"\nError: {error}\n")
@@ -714,12 +727,16 @@ class YouTubeScreenshotGUI:
             self.output_window.lift()
         else:
             self._build_output_window()
+
     def _read_output(self, process):
         """Pump the child's output into the log. Runs on the worker thread."""
         try:
             for line in iter(process.stdout.readline, ''):
                 if not line:
                     break
+                if line.startswith("@@PROGRESS"):
+                    self._ingest_progress(line)
+                    continue
                 self.root.after(0, lambda l=line: self._append_output(self.output_text, l))
             process.wait()
         except Exception as e:
@@ -730,6 +747,52 @@ class YouTubeScreenshotGUI:
             if process.stdout:
                 process.stdout.close()
         self.root.after(0, lambda: self._on_process_finished(process.returncode))
+
+    def _start_progress_bar(self):
+        """Indeterminate spinner until the CLI reports a frame total."""
+        self._last_progress_ui = 0.0
+        self.progress_bar.configure(mode="indeterminate", maximum=100, value=0)
+        self.progress_bar.pack(side="bottom", fill="x", padx=8, pady=(3, 0))
+        self.progress_bar.start(12)
+
+    def _ingest_progress(self, line):
+        """Parse one @@PROGRESS line and refresh the bar, throttled.
+
+        Runs on the worker thread: it only computes and schedules, never
+        touches widgets directly.
+        """
+        fields = {}
+        for token in line.split()[1:]:
+            key, sep, value = token.partition("=")
+            if sep:
+                fields[key] = value
+        try:
+            done = int(fields["done"])
+            saved = int(fields.get("saved", "0"))
+            skipped = int(fields.get("skipped", "0"))
+            total = int(fields["total"]) if "total" in fields else None
+        except (KeyError, ValueError):
+            return  # malformed machine line - ignore rather than log it
+        now = time.monotonic()
+        if now - self._last_progress_ui < 0.15:
+            return
+        self._last_progress_ui = now
+        self.root.after(0, lambda: self._update_progress(done, total, saved, skipped))
+
+    def _update_progress(self, done, total, saved, skipped):
+        """Determinate bar once a frame total is known; counts in the status."""
+        if total:
+            # stop() halts the indeterminate animation but also resets the
+            # value to 0, so it must run before the value is set - and only
+            # on the transition, or every update would restart from zero.
+            if str(self.progress_bar.cget("mode")) != "determinate":
+                self.progress_bar.stop()
+                self.progress_bar.configure(mode="determinate")
+            self.progress_bar.configure(maximum=total, value=min(done, total))
+            counts = f"{done}/{total} frames"
+        else:
+            counts = f"{done} frames"
+        self.status_var.set(f"Processing... {counts} ({saved} saved, {skipped} skipped)")
 
     def _append_output(self, widget, line):
         # Buffer first: the Text widget may already be closed, and the buffer

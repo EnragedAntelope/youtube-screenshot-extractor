@@ -137,6 +137,8 @@ Both scores describe the frame **as cropped**, so they match the image on disk. 
 
 By default a terminal gets a progress bar, and piped output (including the GUI's log) gets a one-line summary every couple of seconds. Pass `--verbose` for a line per frame with its scores and skip reason — useful when tuning thresholds, but an `--method all` run over a few minutes of video emits tens of thousands of them.
 
+The GUI additionally shows a live progress bar with frame counts in the status bar; it is fed by machine-readable progress lines the GUI requests from the script, which never appear in the log itself.
+
 ## Tips
 
 - **Speed**: `keyframes` is fastest, `scene` finds natural cuts, `interval`/`all` can be slow on long videos.

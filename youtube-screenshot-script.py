@@ -722,6 +722,11 @@ class _StatusReporter:
     bar built from carriage returns renders as thousands of separate lines. That
     case gets a periodic one-line summary instead.
 
+    The GUI additionally needs a machine-parsable feed for its determinate
+    progress bar. It sets YSE_PROGRESS=1 in the child's environment; when
+    present, every advance() also emits one @@PROGRESS line, which the GUI
+    parses and strips from the log. Terminal runs never emit them.
+
     Per-frame lines are verbose-only either way. They used to print
     unconditionally while the bar was verbose-only, which is backwards - an
     'all'-method run over a few minutes of video emits tens of thousands of
@@ -733,6 +738,10 @@ class _StatusReporter:
         self.is_tty = bool(getattr(sys.stdout, 'isatty', lambda: False)())
         self.summary_interval = summary_interval
         self._last_summary = 0.0
+        # The GUI sets YSE_PROGRESS=1 and parses @@PROGRESS lines into its
+        # determinate bar, stripping them from the log. Terminals never see
+        # them, so human-facing output is unchanged.
+        self._machine_progress = os.environ.get("YSE_PROGRESS") == "1"
         self._bar = tqdm(total=total, initial=initial, disable=not self.is_tty,
                          unit="frame")
 
@@ -751,6 +760,8 @@ class _StatusReporter:
 
     def advance(self, tracker):
         self._bar.update(1)
+        if self._machine_progress:
+            self._emit(self.progress_line(tracker))
         if self.is_tty or self.verbose:
             return
         now = time.monotonic()
@@ -758,6 +769,14 @@ class _StatusReporter:
             return
         self._last_summary = now
         self._emit(self.summary_line(tracker))
+
+    def progress_line(self, tracker):
+        """One machine-parsable snapshot for the GUI's progress bar."""
+        parts = [f"done={tracker.processed}"]
+        if self._bar.total:
+            parts.append(f"total={self._bar.total}")
+        parts.append(f"saved={tracker.saved} skipped={tracker.skipped}")
+        return "@@PROGRESS " + " ".join(parts)
 
     def summary_line(self, tracker):
         total = self._bar.total

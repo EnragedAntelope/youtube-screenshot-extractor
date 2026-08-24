@@ -513,6 +513,24 @@ class TestStatusReporter:
         reporter = yse._StatusReporter(None, 0, False)
         assert "5 frames" in reporter.summary_line(self._Tracker)
 
+    def test_machine_progress_lines_are_opt_in_via_env(self, monkeypatch):
+        """The GUI sets YSE_PROGRESS=1 and parses @@PROGRESS lines into its
+        determinate bar; terminal runs must never emit them."""
+        monkeypatch.setattr(sys, "stdout", self._FakeOut(False))
+        emitted = []
+        monkeypatch.setattr(yse._StatusReporter, "_emit", staticmethod(emitted.append))
+
+        monkeypatch.setenv("YSE_PROGRESS", "1")
+        reporter = yse._StatusReporter(10, 0, False)
+        reporter.advance(self._Tracker)
+        assert "@@PROGRESS done=5 total=10 saved=4 skipped=1" in emitted
+
+        emitted.clear()
+        monkeypatch.delenv("YSE_PROGRESS")
+        quiet = yse._StatusReporter(10, 0, False)
+        quiet.advance(self._Tracker)
+        assert not any(e.startswith("@@PROGRESS") for e in emitted)
+
 
 class TestProcessFrameScoring:
     """The filename's scores must describe the frame that was actually saved."""
@@ -723,3 +741,19 @@ class TestApplyFfmpegFilter:
 
     def test_unknown_filter_reports_failure_as_none(self):
         assert yse.apply_ffmpeg_filter(self._gradient(), "nosuchfilter=1", verbose=False) is None
+
+
+class TestGuiProgressWiring:
+    """The GUI drives its determinate bar from the CLI's @@PROGRESS machine
+    lines, which are opt-in via YSE_PROGRESS=1. Checked statically because
+    tkinter is not importable everywhere."""
+
+    def test_gui_requests_and_consumes_the_machine_channel(self):
+        gui = (REPO_ROOT / "youtube-screenshot-gui.py").read_text()
+        assert "YSE_PROGRESS" in gui
+        assert "@@PROGRESS" in gui
+
+    def test_cli_emits_the_machine_channel(self):
+        cli = (REPO_ROOT / "youtube-screenshot-script.py").read_text()
+        assert "@@PROGRESS " in cli
+        assert "YSE_PROGRESS" in cli
