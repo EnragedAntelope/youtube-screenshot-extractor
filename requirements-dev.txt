@@ -1,0 +1,4 @@
+# Development-only dependencies: unit tests and lint. Runtime dependencies
+# live in requirements.txt; CI installs both.
+pytest>=8.0
+pyflakes>=3.2
