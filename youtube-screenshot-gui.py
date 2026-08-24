@@ -4,6 +4,7 @@ YouTube Screenshot Extractor - GUI
 A graphical interface for extracting frames from videos.
 """
 
+from collections import deque
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import subprocess
@@ -21,6 +22,22 @@ def check_ffmpeg():
         return True
     except OSError:
         return False
+
+
+def _kill_process_tree(process):
+    """Stop an extraction and everything it spawned.
+
+    terminate() kills only the direct child (the CLI); yt-dlp's FFmpeg
+    survives on Windows as an orphan and keeps running headless. taskkill /T
+    walks the whole process tree instead. Nothing graceful is lost: the CLI
+    has no signal handler, so a plain terminate skips its cleanup anyway.
+    """
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    else:
+        process.terminate()
 
 
 def wheel_steps(event):
@@ -144,7 +161,7 @@ class YouTubeScreenshotGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("YouTube Screenshot Extractor")
-        self.root.geometry("580x620")
+        self.root.geometry("660x660")
         self.root.minsize(480, 400)
 
         # Check FFmpeg availability at startup
@@ -153,6 +170,9 @@ class YouTubeScreenshotGUI:
         # Track output window for reuse
         self.output_window = None
         self.output_text = None
+        # Every output line ever produced, so a closed log window can be
+        # reopened with its history intact (the Text widget dies with it).
+        self.output_buffer = deque(maxlen=20000)
         # Currently running extraction subprocess, if any
         self.process = None
         self.stop_requested = False
@@ -238,7 +258,8 @@ class YouTubeScreenshotGUI:
         res_frame.pack(fill="x", pady=2)
         ttk.Label(res_frame, text="Max Resolution:").pack(side="left")
         res_combo = ttk.Combobox(res_frame, textvariable=self.max_resolution_var, width=8,
-                                  values=["", "480", "720", "1080", "1440", "2160"])
+                                  values=["", "480", "720", "1080", "1440", "2160"],
+                                  state="readonly")
         res_combo.pack(side="left", padx=(4, 0))
         ToolTip(res_combo, "Limit YouTube download quality. Higher = slower downloads, more rate limiting. 1080 recommended.")
 
@@ -302,7 +323,7 @@ class YouTubeScreenshotGUI:
         q_frame = ttk.Frame(self.main_frame)
         q_frame.pack(fill="x", pady=2)
         ttk.Label(q_frame, text="Quality:", width=8).pack(side="left")
-        self.quality_value_label = ttk.Label(q_frame, text="30", width=3)
+        self.quality_value_label = ttk.Label(q_frame, text="30", width=4)
         self.quality_value_label.pack(side="right")
         ttk.Scale(q_frame, from_=0, to=100, variable=self.quality_var,
                  command=lambda v: self.quality_value_label.config(text=f"{float(v):.0f}")
@@ -313,9 +334,9 @@ class YouTubeScreenshotGUI:
         b_frame = ttk.Frame(self.main_frame)
         b_frame.pack(fill="x", pady=2)
         ttk.Label(b_frame, text="Blur:", width=8).pack(side="left")
-        self.blur_value_label = ttk.Label(b_frame, text="50", width=3)
+        self.blur_value_label = ttk.Label(b_frame, text="50", width=4)
         self.blur_value_label.pack(side="right")
-        ttk.Scale(b_frame, from_=0, to=500, variable=self.blur_var,
+        ttk.Scale(b_frame, from_=0, to=1000, variable=self.blur_var,
                  command=lambda v: self.blur_value_label.config(text=f"{float(v):.0f}")
                  ).pack(side="left", fill="x", expand=True, padx=4)
         ToolTip(b_frame, "Min sharpness. Higher = less blur allowed. Default 50; raise toward 150 to be pickier.")
@@ -427,6 +448,11 @@ class YouTubeScreenshotGUI:
         verbose_cb = ttk.Checkbutton(frame, text="Verbose", variable=self.verbose_var)
         verbose_cb.pack(side="left")
         ToolTip(verbose_cb, "Show detailed yt-dlp output (noisy).")
+
+        self.log_button = ttk.Button(frame, text="Show Log", command=self._show_output_log,
+                                     width=10)
+        self.log_button.pack(side="left", padx=(8, 0))
+        ToolTip(self.log_button, "Reopen the extraction output log.")
 
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(side="right")
@@ -597,7 +623,7 @@ class YouTubeScreenshotGUI:
         self.stop_requested = True
         self.status_var.set("Stopping...")
         try:
-            process.terminate()
+            _kill_process_tree(process)
         except OSError as e:
             messagebox.showerror("Error", f"Could not stop the extraction: {e}")
 
@@ -610,8 +636,9 @@ class YouTubeScreenshotGUI:
             messagebox.showerror("Error", error)
             return
         if self.stop_requested:
-            # terminate() surfaces as a negative return code (-SIGTERM); report
-            # what the user actually did rather than "Exit code: -15".
+            # A user stop surfaces as whatever code the platform kill produces
+            # (-SIGTERM on POSIX, taskkill's exit code on Windows); report what
+            # the user actually did rather than the raw number.
             status = "Stopped. Frames already saved were kept."
         elif returncode == 0:
             status = "Complete!"
@@ -621,64 +648,72 @@ class YouTubeScreenshotGUI:
         self.status_var.set(status)
         self._append_output(self.output_text, f"\n--- {status} ---\n")
 
+    def _build_output_window(self):
+        """Create a fresh output log window and replay the buffered history."""
+        self.output_window = tk.Toplevel(self.root)
+        self.output_window.title("Output")
+        self.output_window.geometry("800x500")
+        self.output_window.transient(self.root)
+
+        text_frame = ttk.Frame(self.output_window)
+        text_frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+        scrollbar = ttk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self.output_text = tk.Text(text_frame, wrap="word", font=("Consolas", 9), yscrollcommand=scrollbar.set)
+        self.output_text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.output_text.yview)
+
+        def on_wheel(ev):
+            self.output_text.yview_scroll(wheel_steps(ev), "units")
+
+        def bind_scroll(e):
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self.output_text.bind_all(seq, on_wheel)
+
+        def unbind_scroll(e):
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self.output_text.unbind_all(seq)
+        self.output_text.bind("<Enter>", bind_scroll)
+        self.output_text.bind("<Leave>", unbind_scroll)
+
+        def on_close():
+            unbind_scroll(None)
+            self.output_window.destroy()
+            self.output_window = None
+            self.output_text = None
+        self.output_window.protocol("WM_DELETE_WINDOW", on_close)
+
+        ttk.Button(self.output_window, text="Close", command=on_close).pack(pady=6)
+
+        # Replay everything logged so far - including earlier runs whose
+        # window was closed - so reopening loses nothing.
+        for line in self.output_buffer:
+            self.output_text.insert("end", line)
+        self.output_text.see("end")
+
     def _create_output_window(self, dry_run=False, cmd=None):
         """Create or reuse the output window."""
-        # Reuse existing window if it exists and is still open
         if self.output_window is not None and self.output_window.winfo_exists():
             # Add separator for new run
             self._append_output(self.output_text, "\n" + "="*60 + "\n")
             self._append_output(self.output_text, f"{'Dry Run' if dry_run else 'New Extraction'} Started\n")
             self._append_output(self.output_text, "="*60 + "\n\n")
-            if cmd:
-                self._append_output(self.output_text, f"Command: {' '.join(cmd[:5])}...\n")
-                self._append_output(self.output_text, f"Full command: {' '.join(cmd)}\n\n")
-            self._append_output(self.output_text, "Processing... please wait.\n\n")
             self.output_window.lift()  # Bring to front
         else:
-            # Create new window
-            self.output_window = tk.Toplevel(self.root)
-            self.output_window.title("Output")
-            self.output_window.geometry("800x500")
-            self.output_window.transient(self.root)
+            self._build_output_window()
+        if cmd:
+            self._append_output(self.output_text, f"Command: {' '.join(cmd[:5])}...\n")
+            self._append_output(self.output_text, f"Full command: {' '.join(cmd)}\n\n")
+        self._append_output(self.output_text, "Processing... please wait.\n\n")
 
-            text_frame = ttk.Frame(self.output_window)
-            text_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-            scrollbar = ttk.Scrollbar(text_frame)
-            scrollbar.pack(side="right", fill="y")
-
-            self.output_text = tk.Text(text_frame, wrap="word", font=("Consolas", 9), yscrollcommand=scrollbar.set)
-            self.output_text.pack(side="left", fill="both", expand=True)
-            scrollbar.config(command=self.output_text.yview)
-
-            def on_wheel(ev):
-                self.output_text.yview_scroll(wheel_steps(ev), "units")
-
-            def bind_scroll(e):
-                for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-                    self.output_text.bind_all(seq, on_wheel)
-
-            def unbind_scroll(e):
-                for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-                    self.output_text.unbind_all(seq)
-            self.output_text.bind("<Enter>", bind_scroll)
-            self.output_text.bind("<Leave>", unbind_scroll)
-
-            def on_close():
-                unbind_scroll(None)
-                self.output_window.destroy()
-                self.output_window = None
-                self.output_text = None
-            self.output_window.protocol("WM_DELETE_WINDOW", on_close)
-
-            ttk.Button(self.output_window, text="Close", command=on_close).pack(pady=6)
-
-            # Initial message with command info
-            if cmd:
-                self._append_output(self.output_text, f"Command: {' '.join(cmd[:5])}...\n")
-                self._append_output(self.output_text, f"Full command: {' '.join(cmd)}\n\n")
-            self._append_output(self.output_text, "Processing... please wait.\n\n")
-    
+    def _show_output_log(self):
+        """Reopen the log window after it has been closed mid-run."""
+        if self.output_window is not None and self.output_window.winfo_exists():
+            self.output_window.lift()
+        else:
+            self._build_output_window()
     def _read_output(self, process):
         """Pump the child's output into the log. Runs on the worker thread."""
         try:
@@ -697,6 +732,9 @@ class YouTubeScreenshotGUI:
         self.root.after(0, lambda: self._on_process_finished(process.returncode))
 
     def _append_output(self, widget, line):
+        # Buffer first: the Text widget may already be closed, and the buffer
+        # is what lets a reopened log show the complete history.
+        self.output_buffer.append(line)
         try:
             if widget and widget.winfo_exists():
                 widget.insert("end", line)
@@ -720,11 +758,12 @@ def main():
     app = YouTubeScreenshotGUI(root)
 
     def on_quit():
-        # Terminate the child so closing the window does not leave an
-        # extraction running headless with nothing reading its output.
+        # Kill the child's whole tree so closing the window does not leave an
+        # extraction (or its FFmpeg) running headless with nothing reading
+        # its output.
         if app.process is not None and app.process.poll() is None:
             try:
-                app.process.terminate()
+                _kill_process_tree(app.process)
             except OSError:
                 pass
         root.destroy()
