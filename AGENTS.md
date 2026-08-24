@@ -6,11 +6,11 @@ Pull clean, high-quality still frames from videos — YouTube, 1000+ other sites
 
 ## Current state
 
-_Last verified: 2026-08-19_
+_Last verified: 2026-08-23_
 
 - **Status:** working and maintained, no version number and no release tags — `git log` is the only version record. The recent history is a run of audits fixing silently-broken options rather than new features.
 - **Works:** all four extraction methods (interval, every frame, keyframes, scene detection); automatic blur/quality filtering, black-bar cropping and watermark flagging; YouTube authentication via browser cookies plus request-rate throttling; resume for large extractions; parallel worker-pool processing that streams frames instead of loading the whole video; GUI and CLI at parity.
-- **In progress:** nothing — the last commits closed out a dependency/security audit (vulnerable Pillow and tqdm floors raised, unbounded OpenCV range bounded, first test suite and CI added) and the follow-ups it flagged: output verbosity inverted, CLI/GUI thresholds unified at 30/50, `--config` validated, and frame scores now measured post-crop.
+- **In progress:** nothing — recent history is two audit rounds: dependency/security floors plus the first test suite and CI, then a robustness/parity pass (Stop kills the whole process tree, failed downloads clean up their partial files, `--png` honored by keyframes, FFmpeg filter frames piped instead of temp-filed, GUI blur range matched to the CLI).
 - **Known gaps / next steps:** tests cover the pure helpers and `process_frame` (`tests/`, run with `pytest`) — download and the whole GUI are still verified by hand, and tkinter is not installable in every sandbox so GUI changes need a real desktop; **YouTube extraction is inherently fragile** — yt-dlp must be kept current (launcher option 2, or `pip install --upgrade "yt-dlp[default]"`), and the working client selection changes over time; Deno is required for YouTube and FFmpeg for keyframes, so a partial install silently limits which methods work; the rate-limit and client-selection notes in *Conventions & gotchas* are the most perishable content in this file — re-verify them before trusting them.
 - **Deep docs:** none — `README.md` is the user-facing reference. Earlier implementation notes on PO tokens and authentication live only in the git history.
 
@@ -34,13 +34,14 @@ _Last verified: 2026-08-19_
 | `youtube-screenshot-gui.py` | GUI (point-and-click interface) |
 | `START.bat` / `start.sh` | Startup menu: setup, update, launch GUI, help |
 | `requirements.txt` | Python dependencies (yt-dlp, etc.) |
+| `requirements-dev.txt` | Test/lint dependencies (pytest, pyflakes) |
 | `assets/` | Screenshots and documentation images |
 
 ## Build / test / run
 
 ```bash
 # Run the tests (no Deno/FFmpeg needed for the unit tests)
-pip install pytest
+pip install -r requirements-dev.txt
 python -m pytest tests -v
 
 # Windows quick start
@@ -84,7 +85,7 @@ python youtube-screenshot-script.py --help
 - **Frame pipeline order matters:** crop black bars -> score -> threshold -> filter -> save. Scoring before the crop lets letterbox bars drag the score down and makes the filename describe a frame that was never written; scoring after the filters stamps a denoised frame with a worse blur number than it earned.
 - **Output verbosity:** per-frame lines are `--verbose` only. A terminal gets a tqdm bar; piped output (the GUI streams this script's stdout into a Tk widget, where a carriage-return bar is unreadable) gets a periodic one-line summary instead. `_StatusReporter` owns that decision.
 - **Dependency floors are the security surface:** pip will not upgrade an already-installed package that still satisfies a `>=` floor, so a stale floor is what long-lived installs keep running. CI audits both the resolved versions and the floors themselves; raise the floor when bumping, don't just rely on `>=`.
-- **`keyframes` bypasses the frame pipeline** — it shells straight to FFmpeg, so quality/blur thresholds, watermark detection, post-processing filters, `--png` and `--resume` do not apply to it.
+- **`keyframes` bypasses the frame pipeline** — it shells straight to FFmpeg, so quality/blur thresholds, watermark detection, post-processing filters and `--resume` do not apply to it (`--png` is honored).
 
 ## Security
 
