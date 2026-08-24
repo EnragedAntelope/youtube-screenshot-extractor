@@ -165,3 +165,6 @@ progress.json
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Claude Code personal settings - machine-local permission grants, never shared
+.claude/settings.local.json
