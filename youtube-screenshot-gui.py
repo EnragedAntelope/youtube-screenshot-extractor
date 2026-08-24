@@ -210,6 +210,10 @@ class YouTubeScreenshotGUI:
         self._create_youtube_auth_section()
         self._create_action_section()
         self._create_status_bar()
+        # Match the controls to the starting method. Only the radio callback
+        # would otherwise do this, so changing the default method to keyframes
+        # would open the window with its ignored options still live.
+        self._sync_pipeline_controls(self.method_var.get())
 
     def _init_variables(self):
         self.source_var = tk.StringVar()

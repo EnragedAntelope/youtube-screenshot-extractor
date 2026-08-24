@@ -217,3 +217,32 @@ class TestNoteWrapping:
             app.root.update_idletasks()
         note = app.keyframes_note
         assert note.winfo_reqwidth() <= note.winfo_width()
+
+
+class TestInitialState:
+    """_sync_pipeline_controls runs from the radio callback, so nothing would
+    apply it at startup - the opening state was correct only because the
+    default method happens not to be keyframes."""
+
+    def test_startup_matches_the_default_method(self, app):
+        assert app.method_var.get() != "keyframes"
+        for widget, needs_ffmpeg in app._pipeline_widgets:
+            if needs_ffmpeg and not app.ffmpeg_available:
+                continue
+            assert str(widget.cget("state")) == "normal", widget
+        assert not app.keyframes_note.winfo_ismapped()
+
+    def test_a_keyframes_default_would_open_gated(self, gui_module, tk_root, monkeypatch):
+        original = gui_module.YouTubeScreenshotGUI._init_variables
+
+        def keyframes_default(self):
+            original(self)
+            self.method_var.set("keyframes")
+
+        monkeypatch.setattr(gui_module.YouTubeScreenshotGUI, "_init_variables", keyframes_default)
+        instance = _make_app(gui_module, tk_root)
+        try:
+            for widget, _ in instance._pipeline_widgets:
+                assert str(widget.cget("state")) == "disabled", widget
+        finally:
+            instance.root.destroy()
