@@ -12,6 +12,7 @@ import io as _io
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -825,3 +826,63 @@ class TestSourceEncoding:
     @pytest.mark.parametrize("name", ["youtube-screenshot-gui.py", "youtube-screenshot-script.py"])
     def test_sources_are_readable_as_utf8(self, name):
         (REPO_ROOT / name).read_text(encoding="utf-8")
+
+
+class TestKeyframeCounts:
+    """keyframes reports what THIS run wrote. FFmpeg numbers from 1 every
+    time, so re-using an --output folder overwrites the low numbers and
+    leaves any higher ones from a longer previous video in place - counting
+    the folder credited those leftovers to the current run."""
+
+    @pytest.fixture(autouse=True)
+    def _require_ffmpeg(self):
+        if shutil.which("ffmpeg") is None:
+            pytest.skip("FFmpeg not available")
+
+    @staticmethod
+    def _clip(path, seconds):
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+             "-i", f"testsrc=size=64x64:rate=10:duration={seconds}",
+             "-g", "10", "-pix_fmt", "yuv420p", str(path)],
+            check=True,
+        )
+
+    def _extract(self, video, out):
+        processed, skipped, saved, _ = yse.extract_frames(
+            str(video), str(out), method="keyframes"
+        )
+        return processed, skipped, saved
+
+    def test_fresh_folder_counts_every_keyframe(self, tmp_path):
+        clip = tmp_path / "clip.mp4"
+        self._clip(clip, 3)
+        out = tmp_path / "out"
+        _, _, saved = self._extract(clip, out)
+        assert saved == len(list(out.glob("keyframe_*.jpg")))
+        assert saved > 0
+
+    def test_leftovers_from_a_longer_run_are_not_counted(self, tmp_path):
+        out = tmp_path / "out"
+        long_clip, short_clip = tmp_path / "long.mp4", tmp_path / "short.mp4"
+        self._clip(long_clip, 20)
+        self._clip(short_clip, 3)
+
+        _, _, long_saved = self._extract(long_clip, out)
+        on_disk_after_long = len(list(out.glob("keyframe_*.jpg")))
+        assert long_saved == on_disk_after_long
+
+        _, _, short_saved = self._extract(short_clip, out)
+        # The folder still holds the long run's higher-numbered files.
+        assert len(list(out.glob("keyframe_*.jpg"))) == on_disk_after_long
+        assert 0 < short_saved < long_saved
+
+    def test_rerunning_the_same_clip_counts_all_of_it(self, tmp_path):
+        """Every file is overwritten, so all of them belong to this run - an
+        over-eager 'only brand-new paths' rule would report zero here."""
+        clip = tmp_path / "clip.mp4"
+        self._clip(clip, 3)
+        out = tmp_path / "out"
+        _, _, first = self._extract(clip, out)
+        _, _, second = self._extract(clip, out)
+        assert second == first > 0

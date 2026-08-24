@@ -870,6 +870,24 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
             "-q:v", "2",
             output_pattern
         ]
+        # Snapshot the folder so the count below can tell this extraction's
+        # output from leftovers. Each file is compared against its OWN earlier
+        # stat rather than against a wall-clock instant: two runs seconds apart
+        # are indistinguishable by "mtime >= started" once filesystem timestamp
+        # granularity is allowed for.
+        keyframe_glob = os.path.join(output_folder, f"keyframe_*.{extension}")
+
+        def stat_keyframes():
+            snapshot = {}
+            for path in glob.glob(keyframe_glob):
+                try:
+                    info = os.stat(path)
+                except OSError:
+                    continue
+                snapshot[path] = (info.st_mtime_ns, info.st_size)
+            return snapshot
+
+        before = stat_keyframes()
         try:
             # -y and -nostdin: without them FFmpeg prompts "Overwrite? [y/N]" when
             # the output folder already holds keyframes from a previous run and
@@ -880,8 +898,17 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         except subprocess.CalledProcessError as e:
             print(f"Error during keyframe extraction: {e.stderr.decode() if e.stderr else 'Unknown error'}")
             return 0, 0, 0, set()
-        saved = len(glob.glob(os.path.join(output_folder, f"keyframe_*.{extension}")))
+        # Count what this run wrote, not what is in the folder. FFmpeg numbers
+        # from 1 every time, so re-using an --output folder overwrites the low
+        # numbers and leaves any higher ones from a longer previous video in
+        # place - counting the folder reported those as saved by this run too.
+        after = stat_keyframes()
+        saved = sum(1 for path, info in after.items() if before.get(path) != info)
+        stale = len(after) - saved
         print("Keyframe extraction complete.")
+        if stale:
+            safe_print(f"Note: {stale} keyframe file(s) already in {output_folder} "
+                       "are from an earlier run and were left untouched.")
         return saved, 0, saved, set()
 
     scene_frame_numbers = None
