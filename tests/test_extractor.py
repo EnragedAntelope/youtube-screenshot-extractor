@@ -11,6 +11,7 @@ import re
 import io as _io
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -106,7 +107,13 @@ class TestSanitize:
     def test_output_path_sanitizes_bare_folder_name(self):
         assert yse.sanitize_output_path("my shots!") == "my_shots_"
 
-    def test_output_path_passes_through_empty(self):
+        assert yse.sanitize_output_path("") == ""
+
+    def test_filename_keeps_non_latin_letters(self):
+        # \w is Unicode-aware in Python 3: CJK and Cyrillic titles stay
+        # readable; only spaces and symbols become underscores.
+        assert yse.sanitize_filename("日本語 タイトル") == "日本語_タイトル"
+        assert yse.sanitize_filename("Привет мир") == "Привет_мир"
         assert yse.sanitize_output_path("") == ""
 
 
@@ -663,3 +670,56 @@ class TestGuiCliParity:
         gui = self.GUI.read_text()
         assert "self.quality_var = tk.DoubleVar(value=30.0)" in gui
         assert "self.blur_var = tk.DoubleVar(value=50.0)" in gui
+
+
+class TestRemovePartialDownload:
+    """A failed download must not leave the half-written target plus
+    yt-dlp's .part/.ytdl bookkeeping in the working directory."""
+
+    def test_removes_target_and_leftovers_but_nothing_else(self, tmp_path):
+        target = tmp_path / "downloaded_video_20260823_120000.mp4"
+        target.write_bytes(b"partial")
+        leftovers = [
+            tmp_path / (target.name + ".part"),
+            tmp_path / (target.name + ".ytdl"),
+            tmp_path / (target.name + ".part-Frag007"),
+        ]
+        for leftover in leftovers:
+            leftover.write_bytes(b"x")
+        unrelated = tmp_path / "unrelated.mp4"
+        unrelated.write_bytes(b"keep me")
+
+        yse.remove_partial_download(str(target))
+
+        assert not target.exists()
+        assert all(not leftover.exists() for leftover in leftovers)
+        assert unrelated.exists()
+
+    def test_missing_target_is_a_no_op(self, tmp_path):
+        yse.remove_partial_download(str(tmp_path / "absent.mp4"))
+
+
+class TestApplyFfmpegFilter:
+    """The pipe-based FFmpeg round trip. Skipped where FFmpeg is absent;
+    CI installs it, so the path stays covered there."""
+
+    @pytest.fixture(autouse=True)
+    def _require_ffmpeg(self):
+        if shutil.which("ffmpeg") is None:
+            pytest.skip("FFmpeg not available")
+
+    @staticmethod
+    def _gradient():
+        frame = np.zeros((64, 96, 3), np.uint8)
+        frame[:] = np.linspace(0, 255, 96, dtype=np.uint8)[None, :, None]
+        return frame
+
+    def test_gradfun_preserves_dimensions_and_dtype(self):
+        frame = self._gradient()
+        out = yse.apply_ffmpeg_filter(frame, "gradfun=1.2:8", verbose=False)
+        assert out is not None
+        assert out.shape == frame.shape
+        assert out.dtype == np.uint8
+
+    def test_unknown_filter_reports_failure_as_none(self):
+        assert yse.apply_ffmpeg_filter(self._gradient(), "nosuchfilter=1", verbose=False) is None

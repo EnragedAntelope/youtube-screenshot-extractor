@@ -140,9 +140,9 @@ By default a terminal gets a progress bar, and piped output (including the GUI's
 ## Tips
 
 - **Speed**: `keyframes` is fastest, `scene` finds natural cuts, `interval`/`all` can be slow on long videos.
-- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, post-processing filters, `--png`, or `--resume` — those only apply to the other methods. Output is always JPEG.
+- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, post-processing filters, or `--resume` — those only apply to the other methods. Output is JPEG, or PNG with `--png`.
 - **Default method**: the CLI defaults to `interval`; the GUI defaults to `scene` (a better starting point for most videos). Quality and blur thresholds are the same in both.
-- **Downloaded videos are deleted after extraction** by default. Pass `--keep-video` (or tick *Keep video* in the GUI) to retain the source file.
+- **Downloaded videos are deleted after extraction** by default — and cleaned up if the download fails midway. Pass `--keep-video` (or tick *Keep video* in the GUI) to retain the source file.
 - **Quality tuning**: the defaults (`--quality 30 --blur 50`) are a middle ground shared by the CLI and GUI. Raise toward `50`/`100` to be pickier, lower toward `12`/`10` to keep almost everything. Run with `--verbose` to see each frame's scores while tuning.
 - **Long videos**: use `--resume` and cap resolution with `--max-resolution 1080`.
 - **Filters**: `--gradfun` for subtle banding, `--deband` for severe banding — both add processing time.

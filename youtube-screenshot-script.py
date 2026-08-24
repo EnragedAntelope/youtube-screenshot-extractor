@@ -14,7 +14,6 @@ import json
 from functools import lru_cache
 from tqdm import tqdm
 import time
-import tempfile
 
 
 def _get_subprocess_flags():
@@ -58,6 +57,20 @@ def check_ffmpeg():
 def sanitize_filename(filename):
     """Sanitize a filename by replacing unsafe characters with underscores."""
     return re.sub(r'[^\w\-_.]', '_', filename)
+
+
+def remove_partial_download(video_path):
+    """Delete a partially downloaded video plus yt-dlp's bookkeeping files.
+
+    yt-dlp streams into '<target>.part' (and fragment pieces) before the
+    final file appears, so a failed or interrupted download leaves several
+    hundred MB of orphans behind unless they are removed explicitly.
+    """
+    for leftover in glob.glob(glob.escape(video_path) + "*"):
+        try:
+            os.remove(leftover)
+        except OSError as e:
+            safe_print(f"Note: Could not remove partial download {leftover}: {e}")
 
 
 def clean_youtube_url(url):
@@ -455,11 +468,13 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
             else:
                 if attempt < max_retries - 1:
                     safe_print(f"Download attempt {attempt + 1} failed. Retrying...")
+                    time.sleep(2 ** attempt)
                     continue
         except Exception as e:
             last_error = e
             if attempt < max_retries - 1:
                 safe_print(f"Download attempt {attempt + 1} failed. Retrying...")
+                time.sleep(2 ** attempt)
             else:
                 safe_print(f"Failed to download video after {max_retries} attempts.")
                 raise
@@ -586,43 +601,37 @@ def apply_filters(frame, gradfun, deblock, deband, verbose, ffmpeg_available=Tru
 def apply_ffmpeg_filter(frame, filter_string, verbose):
     """Run an FFmpeg ``-vf`` filter chain on a single BGR frame.
 
-    Returns the filtered frame, or ``None`` if FFmpeg failed (missing binary,
-    non-zero exit, or unreadable output) so callers can report the failure
-    instead of silently keeping the unfiltered frame.
+    Frames are piped as raw video rather than round-tripped through a PNG on
+    disk: gradfun and deband never change frame dimensions, so rawvideo in
+    and out is lossless and skips an encode/decode cycle per frame. Returns
+    the filtered frame, or ``None`` if FFmpeg failed (missing binary,
+    non-zero exit, or short read) so callers can report the failure instead
+    of silently keeping the unfiltered frame.
     """
-    temp_in_name = None
-    temp_out_name = None
+    height, width = frame.shape[:2]
+    ffmpeg_cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin',
+        '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-video_size', f'{width}x{height}',
+        '-i', 'pipe:0',
+        '-vf', filter_string,
+        '-f', 'rawvideo', '-pix_fmt', 'bgr24', 'pipe:1'
+    ]
     try:
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_in:
-            temp_in_name = temp_in.name
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_out:
-            temp_out_name = temp_out.name
+        result = subprocess.run(ffmpeg_cmd, input=frame.tobytes(), capture_output=True,
+                                creationflags=_get_subprocess_flags())
+    except FileNotFoundError:
+        if verbose:
+            print(f"Error: FFmpeg not found. Command attempted: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
+            print("Please ensure FFmpeg is installed and in your system PATH.")
+        return None
 
-        cv2.imwrite(temp_in_name, frame)
-        ffmpeg_cmd = [
-            'ffmpeg', '-hide_banner', '-nostdin', '-y',
-            '-i', temp_in_name, '-vf', filter_string, temp_out_name
-        ]
-        try:
-            subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True,
-                          creationflags=_get_subprocess_flags())
-            return cv2.imread(temp_out_name)  # None if the output couldn't be read
-        except subprocess.CalledProcessError as e:
-            if verbose:
-                print(f"Error running FFmpeg command: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
-                print(f"Error output: {e.stderr}")
-            return None
-        except FileNotFoundError:
-            if verbose:
-                print(f"Error: FFmpeg not found. Command attempted: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
-                print("Please ensure FFmpeg is installed and in your system PATH.")
-            return None
-    finally:
-        # Clean up temporary files
-        if temp_in_name and os.path.exists(temp_in_name):
-            os.unlink(temp_in_name)
-        if temp_out_name and os.path.exists(temp_out_name):
-            os.unlink(temp_out_name)
+    expected_bytes = width * height * 3
+    if result.returncode != 0 or len(result.stdout) != expected_bytes:
+        if verbose:
+            print(f"Error running FFmpeg command: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
+            print(f"Error output: {result.stderr.decode(errors='replace')}")
+        return None
+    return np.frombuffer(result.stdout, np.uint8).reshape(height, width, 3)
 
 def process_frame(args):
     (frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks,
@@ -826,7 +835,11 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
     os.makedirs(output_folder, exist_ok=True)
 
     if method == 'keyframes':
-        output_pattern = os.path.join(output_folder, "keyframe_%03d.jpg")
+        extension = "png" if use_png else "jpg"
+        # %06d rather than %03d: three digits wrap at frame 1000, which then
+        # sorts lexically before keyframe_999. Six digits matches the
+        # frame_%06d naming every other method uses.
+        output_pattern = os.path.join(output_folder, f"keyframe_%06d.{extension}")
         ffmpeg_command = [
             "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", video_path,
             "-vf", "select='eq(pict_type,PICT_TYPE_I)'",
@@ -844,7 +857,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         except subprocess.CalledProcessError as e:
             print(f"Error during keyframe extraction: {e.stderr.decode() if e.stderr else 'Unknown error'}")
             return 0, 0, 0, set()
-        saved = len(glob.glob(os.path.join(output_folder, "keyframe_*.jpg")))
+        saved = len(glob.glob(os.path.join(output_folder, f"keyframe_*.{extension}")))
         print("Keyframe extraction complete.")
         return saved, 0, saved, set()
 
@@ -1023,23 +1036,24 @@ def generate_thumbnail(output_folder):
     cols = min(3, len(selected_frames))
     rows = (len(selected_frames) + cols - 1) // cols
 
-    sizes = []
+    # Open each selected frame once: the size pass and the paste pass used to
+    # read every image from disk twice.
+    tiles = []
     for f in selected_frames:
         with Image.open(os.path.join(output_folder, f)) as im:
-            sizes.append(im.size)
+            tiles.append(im.convert('RGB'))
+    sizes = [t.size for t in tiles]
     cell_w = max(w for w, _ in sizes)
     cell_h = max(h for _, h in sizes)
 
     thumbnail = Image.new('RGB', (cell_w * cols, cell_h * rows), (0, 0, 0))
 
-    for i, f in enumerate(selected_frames):
-        with Image.open(os.path.join(output_folder, f)) as im:
-            tile = im.convert('RGB')
-            # Preserve aspect ratio, then centre the tile inside its cell.
-            tile.thumbnail((cell_w, cell_h), Image.LANCZOS)
-            x = (i % cols) * cell_w + (cell_w - tile.width) // 2
-            y = (i // cols) * cell_h + (cell_h - tile.height) // 2
-            thumbnail.paste(tile, (x, y))
+    for i, tile in enumerate(tiles):
+        # Preserve aspect ratio, then centre the tile inside its cell.
+        tile.thumbnail((cell_w, cell_h), Image.LANCZOS)
+        x = (i % cols) * cell_w + (cell_w - tile.width) // 2
+        y = (i // cols) * cell_h + (cell_h - tile.height) // 2
+        thumbnail.paste(tile, (x, y))
 
     thumbnail.save(os.path.join(output_folder, 'thumbnail_montage.jpg'))
     print(f"Thumbnail montage generated from {len(selected_frames)} frames (of {total} total).")
@@ -1232,13 +1246,20 @@ Note:
             if duration:
                 safe_print(f"Duration: {int(duration // 60)}m {int(duration % 60)}s")
         else:
-            video_title = download_video(
-                cleaned_url, video_path, args.max_resolution, args.verbose,
-                cookies_from_browser=args.cookies_from_browser,
-                cookies_file=args.cookies,
-                sleep_requests=args.sleep_requests,
-                extractor_args=extractor_args_dict
-            )
+            try:
+                video_title = download_video(
+                    cleaned_url, video_path, args.max_resolution, args.verbose,
+                    cookies_from_browser=args.cookies_from_browser,
+                    cookies_file=args.cookies,
+                    sleep_requests=args.sleep_requests,
+                    extractor_args=extractor_args_dict
+                )
+            except BaseException:
+                # A failed download leaves the half-written target plus
+                # yt-dlp's .part bookkeeping behind; clean them up instead of
+                # accumulating multi-hundred-MB orphans across failed runs.
+                remove_partial_download(video_path)
+                raise
         sanitized_title = sanitize_filename(video_title)
     else:
         # It's a local file
@@ -1290,12 +1311,19 @@ Note:
 
     if not args.dry_run:
         start_time = time.time()
-        total_frames, skipped_frames, saved_frames, filters_failed = extract_frames(
-            video_path, output_folder, args.method, args.interval, args.quality,
-            args.blur, args.detect_watermarks, args.watermark_threshold,
-            not args.disable_parallel, args.png, args.fast_scene,
-            args.resume, args.verbose, args.gradfun, args.deblock, args.deband
-        )
+        try:
+            total_frames, skipped_frames, saved_frames, filters_failed = extract_frames(
+                video_path, output_folder, args.method, args.interval, args.quality,
+                args.blur, args.detect_watermarks, args.watermark_threshold,
+                not args.disable_parallel, args.png, args.fast_scene,
+                args.resume, args.verbose, args.gradfun, args.deblock, args.deband
+            )
+        except BaseException:
+            # Same reasoning as the download path above: an aborted extraction
+            # should not leave our downloaded video behind either.
+            if is_url and not args.keep_video:
+                remove_partial_download(video_path)
+            raise
         end_time = time.time()
 
         execution_time = end_time - start_time
@@ -1304,8 +1332,8 @@ Note:
         print("\nFrame extraction complete.")
         print(f"Total execution time: {execution_time:.2f} seconds")
         print(f"Processed {total_frames} frames.")
-        print(f"{saved_frames} high-quality frames saved!")
-        print(f"{skipped_frames} frames skipped due to low-quality and/or blur.")
+        print(f"{saved_frames} high-quality frame{'s' if saved_frames != 1 else ''} saved!")
+        print(f"{skipped_frames} frame{'s' if skipped_frames != 1 else ''} skipped due to low-quality and/or blur.")
         print(f"Processing speed: {frames_per_second:.2f} frames/second")
 
         # Add information about post-processing filters
