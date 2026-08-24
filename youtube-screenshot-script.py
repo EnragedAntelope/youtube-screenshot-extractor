@@ -859,8 +859,12 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         # sorts lexically before keyframe_999. Six digits matches the
         # frame_%06d naming every other method uses.
         output_pattern = os.path.join(output_folder, f"keyframe_%06d.{extension}")
+        # abspath, not the raw path. FFmpeg has no "--" end-of-options marker,
+        # so a leading '-' in the name would be read as a flag; argparse
+        # rejects such a source first, so this is belt-and-braces rather than
+        # a live hole, but it also pins the input against any cwd change.
         ffmpeg_command = [
-            "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", video_path,
+            "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", os.path.abspath(video_path),
             "-vf", "select='eq(pict_type,PICT_TYPE_I)'",
             "-fps_mode", "vfr",
             "-q:v", "2",
@@ -911,13 +915,27 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         expected_total = None  # Unknown length (e.g., some streams)
 
     def frame_generator():
-        """Yield (frame, count) one at a time so memory stays bounded."""
+        """Yield (frame, count) one at a time so memory stays bounded.
+
+        ``count`` numbers the frames this generator actually yields, with no
+        gaps. It is not an index into the source: _ProgressTracker only
+        advances across a contiguous run of completed counts, so a skipped
+        number would strand every later frame in its pending map - totals
+        would under-report and --resume would checkpoint at the gap and
+        re-process everything after it.
+        """
         if scene_frame_numbers is not None:
-            for i, frame_number in enumerate(scene_frame_numbers):
+            # Seeks can fail (short or damaged tail, variable frame rate), so
+            # number the frames that actually decode rather than the scene list.
+            count = 0
+            for frame_number in scene_frame_numbers:
                 video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
                 ret, frame = video.read()
                 if ret:
-                    yield frame, i
+                    yield frame, count
+                    count += 1
+                elif verbose:
+                    safe_print(f"Warning: could not read scene frame {frame_number}; skipping it.")
         else:
             # Sequential read with grab() to skip undecoded frames quickly
             frame_number = 0

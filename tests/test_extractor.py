@@ -15,6 +15,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from PIL import Image
@@ -667,10 +668,10 @@ class TestGuiCliParity:
     CLI_ONLY = {"--config", "--use-gpu"}
 
     def _flags(self):
-        gui = set(re.findall(r'"(--[a-z0-9][a-z0-9-]*)"', self.GUI.read_text()))
+        gui = set(re.findall(r'"(--[a-z0-9][a-z0-9-]*)"', self.GUI.read_text(encoding="utf-8")))
         cli = set(
             re.findall(
-                r'add_argument\(\s*"(--[a-z0-9][a-z0-9-]*)"', self.CLI.read_text()
+                r'add_argument\(\s*"(--[a-z0-9][a-z0-9-]*)"', self.CLI.read_text(encoding="utf-8")
             )
         )
         return gui, cli
@@ -685,7 +686,7 @@ class TestGuiCliParity:
         assert cli - gui == self.CLI_ONLY
 
     def test_thresholds_match_between_the_interfaces(self):
-        gui = self.GUI.read_text()
+        gui = self.GUI.read_text(encoding="utf-8")
         assert "self.quality_var = tk.DoubleVar(value=30.0)" in gui
         assert "self.blur_var = tk.DoubleVar(value=50.0)" in gui
 
@@ -749,11 +750,78 @@ class TestGuiProgressWiring:
     tkinter is not importable everywhere."""
 
     def test_gui_requests_and_consumes_the_machine_channel(self):
-        gui = (REPO_ROOT / "youtube-screenshot-gui.py").read_text()
+        gui = (REPO_ROOT / "youtube-screenshot-gui.py").read_text(encoding="utf-8")
         assert "YSE_PROGRESS" in gui
         assert "@@PROGRESS" in gui
 
     def test_cli_emits_the_machine_channel(self):
-        cli = (REPO_ROOT / "youtube-screenshot-script.py").read_text()
+        cli = (REPO_ROOT / "youtube-screenshot-script.py").read_text(encoding="utf-8")
         assert "@@PROGRESS " in cli
         assert "YSE_PROGRESS" in cli
+
+
+class TestSceneExtractionCounts:
+    """A scene seek that fails to decode must not strand the frames after it.
+
+    ``_ProgressTracker`` only advances across a contiguous run of completed
+    counts, so numbering scene frames by their position in the scene list -
+    and skipping a number when the seek failed - left every later frame
+    parked in the pending map forever: the run under-reported its totals and
+    --resume checkpointed at the gap, re-processing everything past it.
+    """
+
+    @staticmethod
+    def _write_video(path, frames=30, size=(64, 48)):
+        writer = cv2.VideoWriter(
+            str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, size
+        )
+        if not writer.isOpened():
+            pytest.skip("No usable OpenCV video writer backend")
+        rng = np.random.default_rng(0)
+        for _ in range(frames):
+            writer.write(rng.integers(0, 256, (size[1], size[0], 3), dtype=np.uint8))
+        writer.release()
+
+    def _run(self, tmp_path, scene_numbers, monkeypatch, parallel):
+        video = tmp_path / "clip.mp4"
+        self._write_video(video)
+        monkeypatch.setattr(yse, "detect_scene_frames", lambda *a, **k: scene_numbers)
+        out = tmp_path / "out"
+        processed, skipped, saved, _ = yse.extract_frames(
+            str(video), str(out), method="scene",
+            quality_threshold=0, blur_threshold=0, use_parallel=parallel,
+        )
+        on_disk = len(list(out.glob("frame_*.jpg")))
+        return processed, skipped, saved, on_disk
+
+    @pytest.mark.parametrize("parallel", [True, False])
+    def test_totals_match_the_files_on_disk_when_a_seek_fails(
+        self, tmp_path, monkeypatch, parallel
+    ):
+        # 10_000 is far past the end of a 30-frame clip, so its read fails and
+        # the frames requested after it must still be counted.
+        processed, skipped, saved, on_disk = self._run(
+            tmp_path, [0, 5, 10_000, 15, 20], monkeypatch, parallel
+        )
+        assert on_disk > 0
+        assert saved == on_disk
+        assert processed == saved + skipped
+
+    @pytest.mark.parametrize("parallel", [True, False])
+    def test_all_readable_scenes_are_counted(self, tmp_path, monkeypatch, parallel):
+        processed, skipped, saved, on_disk = self._run(
+            tmp_path, [0, 5, 10, 15, 20], monkeypatch, parallel
+        )
+        assert processed == 5
+        assert saved == on_disk == 5
+
+
+class TestSourceEncoding:
+    """The static source scans above read the repo's own files. Without an
+    explicit encoding they use the platform default (cp1252 on Windows), so a
+    single non-ASCII character added to either script would fail the whole
+    suite with a UnicodeDecodeError instead of a real assertion."""
+
+    @pytest.mark.parametrize("name", ["youtube-screenshot-gui.py", "youtube-screenshot-script.py"])
+    def test_sources_are_readable_as_utf8(self, name):
+        (REPO_ROOT / name).read_text(encoding="utf-8")

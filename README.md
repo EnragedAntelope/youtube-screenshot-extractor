@@ -59,11 +59,11 @@ Then install Deno and FFmpeg as shown above.
 ### Running the tests
 
 ```bash
-pip install pytest
+pip install -r requirements-dev.txt
 python -m pytest tests -v
 ```
 
-The unit tests cover the pure helpers (URL cleaning, extractor-arg parsing, black-bar cropping, resume bookkeeping, montage tiling, yt-dlp option building) and need neither Deno nor FFmpeg.
+The unit tests cover the pure helpers (URL cleaning, extractor-arg parsing, black-bar cropping, resume bookkeeping, montage tiling, yt-dlp option building) and need neither Deno nor FFmpeg. `tests/test_gui.py` additionally builds the real Tk widget tree; it skips itself where tkinter cannot open a display.
 
 ## Usage
 
@@ -142,7 +142,7 @@ The GUI additionally shows a live progress bar with frame counts in the status b
 ## Tips
 
 - **Speed**: `keyframes` is fastest, `scene` finds natural cuts, `interval`/`all` can be slow on long videos.
-- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, post-processing filters, or `--resume` — those only apply to the other methods. Output is JPEG, or PNG with `--png`.
+- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, post-processing filters, or `--resume` — those only apply to the other methods. Output is JPEG, or PNG with `--png`. The GUI greys those controls out while Keyframes is selected, so it is clear they are not in play.
 - **Default method**: the CLI defaults to `interval`; the GUI defaults to `scene` (a better starting point for most videos). Quality and blur thresholds are the same in both.
 - **Downloaded videos are deleted after extraction** by default — and cleaned up if the download fails midway. Pass `--keep-video` (or tick *Keep video* in the GUI) to retain the source file.
 - **Quality tuning**: the defaults (`--quality 30 --blur 50`) are a middle ground shared by the CLI and GUI. Raise toward `50`/`100` to be pickier, lower toward `12`/`10` to keep almost everything. Run with `--verbose` to see each frame's scores while tuning.

@@ -15,21 +15,28 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Without a cap a stalled step runs to GitHub's 6-hour default: an
+    # apt-get mirror hang on this workflow did exactly that. The suite
+    # finishes in about three minutes.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         # 3.10 is the documented minimum; 3.13 is the current default.
         python-version: ["3.10", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install FFmpeg and a virtual display
+        # xvfb lets the GUI tests build a real widget tree on a headless
+        # runner. Without it they skip, and the GUI is only ever checked by
+        # scanning its source.
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
 
       - name: Install dependencies
         run: |
@@ -46,7 +53,10 @@ jobs:
         run: python -m py_compile youtube-screenshot-script.py youtube-screenshot-gui.py
 
       - name: Unit tests
-        run: python -m pytest tests -v
+        # -a picks a free display number. The GUI tests skip themselves if Tk
+        # still cannot start, so this never turns a missing display into a
+        # false failure.
+        run: xvfb-run -a python -m pytest tests -v
 
       - name: Smoke test the CLI end to end
         run: |
@@ -61,9 +71,10 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Install pip-audit
@@ -98,8 +109,9 @@ jobs:
 
   shellcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: ShellCheck the launcher
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck

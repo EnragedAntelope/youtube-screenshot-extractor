@@ -194,6 +194,7 @@ class YouTubeScreenshotGUI:
         self.style.configure("TRadiobutton", font=("Segoe UI", 9))
         self.style.configure("Header.TLabel", font=("Segoe UI", 9, "bold"))
         self.style.configure("Run.TButton", font=("Segoe UI", 10, "bold"))
+        self.style.configure("Note.TLabel", font=("Segoe UI", 8, "italic"), foreground="#555555")
 
         # Create scrollable container
         self.scroll_container = ScrollableFrame(root)
@@ -328,9 +329,9 @@ class YouTubeScreenshotGUI:
         ttk.Label(q_frame, text="Quality:", width=8).pack(side="left")
         self.quality_value_label = ttk.Label(q_frame, text="30", width=4)
         self.quality_value_label.pack(side="right")
-        ttk.Scale(q_frame, from_=0, to=100, variable=self.quality_var,
-                 command=lambda v: self.quality_value_label.config(text=f"{float(v):.0f}")
-                 ).pack(side="left", fill="x", expand=True, padx=4)
+        self.quality_scale = ttk.Scale(q_frame, from_=0, to=100, variable=self.quality_var,
+                 command=lambda v: self.quality_value_label.config(text=f"{float(v):.0f}"))
+        self.quality_scale.pack(side="left", fill="x", expand=True, padx=4)
         ToolTip(q_frame, "Min quality 0-100. Higher = stricter. Default 30; raise toward 50 to be pickier.")
 
         # Blur slider
@@ -339,9 +340,9 @@ class YouTubeScreenshotGUI:
         ttk.Label(b_frame, text="Blur:", width=8).pack(side="left")
         self.blur_value_label = ttk.Label(b_frame, text="50", width=4)
         self.blur_value_label.pack(side="right")
-        ttk.Scale(b_frame, from_=0, to=1000, variable=self.blur_var,
-                 command=lambda v: self.blur_value_label.config(text=f"{float(v):.0f}")
-                 ).pack(side="left", fill="x", expand=True, padx=4)
+        self.blur_scale = ttk.Scale(b_frame, from_=0, to=1000, variable=self.blur_var,
+                 command=lambda v: self.blur_value_label.config(text=f"{float(v):.0f}"))
+        self.blur_scale.pack(side="left", fill="x", expand=True, padx=4)
         ToolTip(b_frame, "Min sharpness. Higher = less blur allowed. Default 50; raise toward 150 to be pickier.")
 
     def _create_options_section(self):
@@ -353,6 +354,7 @@ class YouTubeScreenshotGUI:
         par_cb = ttk.Checkbutton(row1, text="Parallel processing", variable=self.parallel_var)
         par_cb.pack(side="left")
         ToolTip(par_cb, "Process multiple frames simultaneously.")
+        self.parallel_cb = par_cb
 
         # Row 2: Features
         row2 = ttk.Frame(self.main_frame)
@@ -373,6 +375,7 @@ class YouTubeScreenshotGUI:
         res_cb = ttk.Checkbutton(row2, text="Resume", variable=self.resume_var)
         res_cb.pack(side="left", padx=(0, 16))
         ToolTip(res_cb, "Continue from previous extraction.")
+        self.watermark_cb, self.watermark_spin, self.resume_cb = wm_cb, wm_thresh, res_cb
 
         kv_cb = ttk.Checkbutton(row2, text="Keep video", variable=self.keep_video_var)
         kv_cb.pack(side="left")
@@ -404,6 +407,35 @@ class YouTubeScreenshotGUI:
             dband_cb.configure(state="disabled")
             self.deband_var.set(False)
             ToolTip(dband_cb, "Aggressive color banding reduction. (FFmpeg not found - install via startup script option 4)")
+
+        # Controls that only affect the per-frame pipeline. The keyframes method
+        # shells straight to FFmpeg and never runs that pipeline, so these are
+        # greyed out while it is selected rather than silently ignored.
+        # gradfun/deband are listed as FFmpeg-gated: when FFmpeg is missing they
+        # are permanently disabled and must not be re-enabled by a method change.
+        self._pipeline_widgets = [
+            (self.quality_scale, False), (self.blur_scale, False),
+            (self.parallel_cb, False), (self.watermark_cb, False),
+            (self.watermark_spin, False), (self.resume_cb, False),
+            (gf_cb, True), (db_cb, False), (dband_cb, True),
+        ]
+
+        # Explains the greying out; packed only while keyframes is selected.
+        self.keyframes_note = ttk.Label(
+            self.main_frame, style="Note.TLabel", wraplength=600, justify="left",
+            text=("Keyframes mode extracts I-frames directly with FFmpeg, so the greyed-out "
+                  "options above (quality/blur thresholds, watermark detection, filters, "
+                  "resume, parallel) do not apply. Format and Thumbnail still do."),
+        )
+        # Wrap to the width actually available: a fixed wraplength wider than
+        # the window clips the tail of the note, and the panel has no
+        # horizontal scrollbar to reveal it. Only reassign on a real change,
+        # or setting it from inside <Configure> re-triggers this handler.
+        def _rewrap(event):
+            target = max(200, event.width - 8)
+            if self.keyframes_note.cget("wraplength") != target:
+                self.keyframes_note.configure(wraplength=target)
+        self.keyframes_note.bind("<Configure>", _rewrap)
 
     def _create_youtube_auth_section(self):
         """Create YouTube authentication and rate limiting section."""
@@ -493,6 +525,26 @@ class YouTubeScreenshotGUI:
         else:
             self.interval_frame.pack_forget()
             self.fast_scene_frame.pack_forget()
+        self._sync_pipeline_controls(method)
+
+    def _sync_pipeline_controls(self, method):
+        """Grey out the options the chosen method ignores.
+
+        keyframes shells straight to FFmpeg and never runs the per-frame
+        pipeline, so leaving these live invites the exact failure this repo
+        keeps hitting: a setting the user changed that quietly does nothing.
+        """
+        keyframes = method == "keyframes"
+        for widget, needs_ffmpeg in self._pipeline_widgets:
+            # An FFmpeg-gated control stays disabled when FFmpeg is missing;
+            # re-enabling it here would resurrect an option that cannot work.
+            if needs_ffmpeg and not self.ffmpeg_available:
+                continue
+            widget.configure(state="disabled" if keyframes else "normal")
+        if keyframes:
+            self.keyframes_note.pack(fill="x", pady=(2, 4), after=self.method_radio_frame)
+        else:
+            self.keyframes_note.pack_forget()
 
     def _browse_video(self):
         filetypes = [("Video files", "*.mp4 *.mkv *.avi *.mov *.webm *.flv *.wmv"), ("All files", "*.*")]
@@ -511,6 +563,25 @@ class YouTubeScreenshotGUI:
         if filename:
             self.cookies_file_var.set(filename)
 
+    def _read_number(self, var, label, low, high):
+        """Read a numeric entry, reporting bad input instead of crashing.
+
+        The Spinboxes are freely typeable, and a DoubleVar/IntVar whose entry
+        holds something non-numeric raises TclError on get(). Uncaught, that
+        propagates out of the button callback into Tk's error handler - which
+        under pythonw has nowhere to print - so the button just looked dead.
+        Returns None after telling the user which field is wrong.
+        """
+        try:
+            value = var.get()
+        except tk.TclError:
+            messagebox.showerror("Invalid value", f"{label} must be a number.")
+            return None
+        if not low <= value <= high:
+            messagebox.showerror("Invalid value", f"{label} must be between {low} and {high}.")
+            return None
+        return value
+
     def _build_command(self, dry_run=False):
         source = self.source_var.get().strip()
         if not source:
@@ -522,12 +593,24 @@ class YouTubeScreenshotGUI:
         cmd.extend(["--method", method])
 
         if method == "interval":
-            cmd.extend(["--interval", str(self.interval_var.get())])
+            # 0.1 is the Spinbox floor, but the entry is typeable, and the CLI
+            # rejects an interval of 0 - catch it here with a usable message.
+            interval = self._read_number(self.interval_var, "Interval", 0.1, 3600)
+            if interval is None:
+                return None
+            cmd.extend(["--interval", str(interval)])
         if method == "scene" and self.fast_scene_var.get():
             cmd.append("--fast-scene")
 
-        cmd.extend(["--quality", f"{self.quality_var.get():.0f}"])
-        cmd.extend(["--blur", f"{self.blur_var.get():.0f}"])
+        # keyframes never runs the per-frame pipeline, so the options that only
+        # feed it are left off the command line entirely - matching the controls
+        # _sync_pipeline_controls() greys out. Passing them would be accepted and
+        # ignored, which is how they came to look functional in the first place.
+        pipeline = method != "keyframes"
+
+        if pipeline:
+            cmd.extend(["--quality", f"{self.quality_var.get():.0f}"])
+            cmd.extend(["--blur", f"{self.blur_var.get():.0f}"])
 
         output = self.output_var.get().strip()
         if output:
@@ -539,22 +622,26 @@ class YouTubeScreenshotGUI:
 
         if self.png_var.get():
             cmd.append("--png")
-        if not self.parallel_var.get():
+        if pipeline and not self.parallel_var.get():
             cmd.append("--disable-parallel")
-        if self.detect_watermarks_var.get():
+        if pipeline and self.detect_watermarks_var.get():
+            threshold = self._read_number(
+                self.watermark_threshold_var, "Watermark threshold", 0.0, 1.0)
+            if threshold is None:
+                return None
             cmd.append("--detect-watermarks")
-            cmd.extend(["--watermark-threshold", str(self.watermark_threshold_var.get())])
+            cmd.extend(["--watermark-threshold", str(threshold)])
         if self.thumbnail_var.get():
             cmd.append("--thumbnail")
-        if self.resume_var.get():
+        if pipeline and self.resume_var.get():
             cmd.append("--resume")
         if self.keep_video_var.get():
             cmd.append("--keep-video")
-        if self.gradfun_var.get():
+        if pipeline and self.gradfun_var.get():
             cmd.append("--gradfun")
-        if self.deblock_var.get():
+        if pipeline and self.deblock_var.get():
             cmd.append("--deblock")
-        if self.deband_var.get():
+        if pipeline and self.deband_var.get():
             cmd.append("--deband")
         if self.verbose_var.get():
             cmd.append("--verbose")
@@ -569,9 +656,11 @@ class YouTubeScreenshotGUI:
         elif cookies_file:
             cmd.extend(["--cookies", cookies_file])
 
-        sleep_requests = self.sleep_requests_var.get()
+        sleep_requests = self._read_number(self.sleep_requests_var, "Rate limit", 0, 3600)
+        if sleep_requests is None:
+            return None
         if sleep_requests > 0:
-            cmd.extend(["--sleep-requests", str(sleep_requests)])
+            cmd.extend(["--sleep-requests", str(int(sleep_requests))])
 
         extractor_args = self.extractor_args_var.get().strip()
         if extractor_args:
@@ -612,6 +701,13 @@ class YouTubeScreenshotGUI:
                     bufsize=1  # Line buffered
                 )
                 self.process = process
+                # Honour a Stop pressed between _set_running(True) and the
+                # assignment above, when there was no process to kill yet.
+                if self.stop_requested:
+                    try:
+                        _kill_process_tree(process)
+                    except OSError:
+                        pass
                 self._read_output(process)
             except Exception as e:
                 # Tk is not thread-safe, so every widget touch from this worker
@@ -628,11 +724,15 @@ class YouTubeScreenshotGUI:
         self.stop_button.configure(state="normal" if running else "disabled")
 
     def _stop(self):
+        # Recorded before the process lookup: the worker thread assigns
+        # self.process only once Popen has returned, so a Stop pressed in that
+        # window finds nothing to kill. The flag makes the intent stick, and
+        # the worker honours it as soon as the child exists.
+        self.stop_requested = True
+        self.status_var.set("Stopping...")
         process = self.process
         if process is None or process.poll() is not None:
             return
-        self.stop_requested = True
-        self.status_var.set("Stopping...")
         try:
             _kill_process_tree(process)
         except OSError as e:
