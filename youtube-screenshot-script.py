@@ -11,9 +11,9 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import json
+from functools import lru_cache
 from tqdm import tqdm
 import time
-import tempfile
 
 
 def _get_subprocess_flags():
@@ -38,17 +38,39 @@ if sys.platform == "win32":
 import yt_dlp
 
 
+@lru_cache(maxsize=1)
 def check_ffmpeg():
+    """Return True if a runnable ffmpeg is on PATH.
+
+    Cached: this is called from several places per run and each miss spawns a
+    process (noticeably slow on Windows). Any OSError - not just a missing
+    binary - means we cannot use FFmpeg, so treat them all as "unavailable"
+    rather than letting them abort the run.
+    """
     try:
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                       creationflags=_get_subprocess_flags())
         return True
-    except FileNotFoundError:
+    except OSError:
         return False
 
 def sanitize_filename(filename):
     """Sanitize a filename by replacing unsafe characters with underscores."""
     return re.sub(r'[^\w\-_.]', '_', filename)
+
+
+def remove_partial_download(video_path):
+    """Delete a partially downloaded video plus yt-dlp's bookkeeping files.
+
+    yt-dlp streams into '<target>.part' (and fragment pieces) before the
+    final file appears, so a failed or interrupted download leaves several
+    hundred MB of orphans behind unless they are removed explicitly.
+    """
+    for leftover in glob.glob(glob.escape(video_path) + "*"):
+        try:
+            os.remove(leftover)
+        except OSError as e:
+            safe_print(f"Note: Could not remove partial download {leftover}: {e}")
 
 
 def clean_youtube_url(url):
@@ -134,6 +156,119 @@ def parse_extractor_args(values):
     return result
 
 
+def _describe_action_type(action):
+    """Human-readable name for what an argparse action accepts."""
+    if action.nargs == 0:
+        return "true or false"
+    if isinstance(action, argparse._AppendAction):
+        return "a string or a list of strings"
+    return {float: "a number", int: "a whole number", str: "a string"}.get(
+        action.type, getattr(action.type, "__name__", "a value")
+    )
+
+
+def _coerce_config_value(parser, path, key, value, action):
+    """Validate one config entry against the option it maps to."""
+    expected = _describe_action_type(action)
+
+    def bad():
+        parser.error(f"Setting '{key}' in {path} must be {expected}, got {value!r}.")
+
+    if action.nargs == 0:  # store_true / store_false
+        if not isinstance(value, bool):
+            bad()
+        return value
+
+    if isinstance(action, argparse._AppendAction):
+        if isinstance(value, str):
+            return [value]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            bad()
+        return value
+
+    # bool is a subclass of int, so float(True) succeeds and would silently turn
+    # a mistyped flag into the number 1.
+    if isinstance(value, bool):
+        bad()
+
+    if action.type is str and not isinstance(value, str):
+        bad()
+
+    # int(5.7) would truncate silently, while the CLI rejects --sleep-requests 5.7.
+    if action.type is int and isinstance(value, float) and not value.is_integer():
+        bad()
+
+    if action.type is not None:
+        try:
+            value = action.type(value)
+        except (TypeError, ValueError):
+            bad()
+    elif action.choices is not None and not isinstance(value, str):
+        # Untyped options with choices (--method) are plain strings.
+        bad()
+
+    if action.choices is not None and value not in action.choices:
+        choices = ", ".join(str(c) for c in action.choices)
+        parser.error(f"Setting '{key}' in {path} must be one of: {choices}. Got {value!r}.")
+
+    return value
+
+
+def apply_config_file(parser, path):
+    """Apply a JSON config file as argparse defaults, validating as we go.
+
+    Previously this was a bare ``set_defaults(**json.load(f))``, which accepted
+    anything: a typo became a silently ignored setting, and a wrong type
+    surfaced much later as a traceback from inside the extraction. Check each
+    entry against the parser's own option table instead, so the file is
+    validated in one place with errors that name the offending key.
+
+    Returns the settings for 'append' options, which the caller must apply
+    after parsing - see the comment at the end of this function.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except OSError as e:
+        parser.error(f"Could not read config file {path}: {e}")
+    except json.JSONDecodeError as e:
+        parser.error(f"Config file {path} is not valid JSON: {e}")
+
+    if not isinstance(config, dict):
+        parser.error(f"Config file {path} must contain a JSON object of settings.")
+
+    # argparse exposes no public option table, so read the actions directly.
+    known = {a.dest: a for a in parser._actions if a.dest not in ("help", "config")}
+
+    validated = {}
+    for key, value in config.items():
+        dest = key.lstrip("-").replace("-", "_")
+        action = known.get(dest)
+        if action is None:
+            # Suggest only what a user could usefully put in a file: not the
+            # positional source, and not options hidden from --help.
+            valid = ", ".join(sorted(
+                d for d, a in known.items()
+                if d != "source" and a.help is not argparse.SUPPRESS
+            ))
+            parser.error(f"Unknown setting '{key}' in config file {path}. Valid settings: {valid}")
+        if dest == "source":
+            parser.error(
+                f"'source' cannot be set from a config file ({path}) - it is a "
+                "positional argument, so pass the URL or file path on the command line."
+            )
+        validated[dest] = _coerce_config_value(parser, path, key, value, action)
+
+    # 'append' options are handled by the caller, not set_defaults: argparse's
+    # append action EXTENDS a non-None default rather than replacing it, so a
+    # value from the file would merge with one given on the command line
+    # instead of being overridden by it like every other setting.
+    appends = {d: v for d, v in validated.items()
+               if isinstance(known[d], argparse._AppendAction)}
+    parser.set_defaults(**{d: v for d, v in validated.items() if d not in appends})
+    return appends
+
+
 def sanitize_output_path(path):
     """Sanitize an output path while preserving directory structure.
 
@@ -197,8 +332,16 @@ def build_ydl_opts(output_path, max_resolution=None, verbose=False, cookies_from
             f'bestvideo[height<={max_resolution}]+bestaudio/best[height<={max_resolution}]/'
             f'bestvideo+bestaudio/best'
         )
+        # Video-only variant, used when FFmpeg is missing and streams cannot be
+        # merged. It still has to honour the resolution cap - dropping it would
+        # silently download the largest stream available.
+        novideo_merge_format_str = (
+            f'bestvideo[height<={max_resolution}]/best[height<={max_resolution}]/'
+            f'bestvideo/best'
+        )
     else:
         format_str = 'bestvideo+bestaudio/best'
+        novideo_merge_format_str = 'bestvideo/best'
 
     ydl_opts = {
         'outtmpl': output_path,
@@ -233,7 +376,7 @@ def build_ydl_opts(output_path, max_resolution=None, verbose=False, cookies_from
 
     if not check_ffmpeg():
         safe_print("Warning: FFmpeg is not installed. Downloading video only without merging audio.")
-        ydl_opts['format'] = 'bestvideo/best'
+        ydl_opts['format'] = novideo_merge_format_str
         ydl_opts['postprocessors'] = []
 
     return ydl_opts
@@ -257,20 +400,23 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
     for attempt in range(max_retries):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                if not verbose:
+                    safe_print("Downloading...")
+                # A single extract_info(download=True) does the metadata fetch and
+                # the download in one pass. Fetching info separately first would
+                # double the requests we make, which works against --sleep-requests
+                # and YouTube's per-hour limits.
+                info = ydl.extract_info(url, download=True)
                 video_title = info.get('title', 'Unknown')
                 if not verbose:
-                    safe_print(f"Downloading: {video_title}...")
-                ydl.download([url])
-                if not verbose:
-                    safe_print("Download complete.")
+                    safe_print(f"Download complete: {video_title}")
             return video_title
         except yt_dlp.utils.DownloadError as e:
             last_error = e
             error_msg = str(e)
             # Check for specific error types and give helpful messages
             if 'Requested format is not available' in error_msg:
-                safe_print(f"Error: The requested video format is not available from this site.")
+                safe_print("Error: The requested video format is not available from this site.")
                 safe_print("This site may not support the selected resolution or format.")
                 safe_print("Try: Remove the resolution limit, or use a different source.")
                 raise
@@ -322,11 +468,13 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
             else:
                 if attempt < max_retries - 1:
                     safe_print(f"Download attempt {attempt + 1} failed. Retrying...")
+                    time.sleep(2 ** attempt)
                     continue
         except Exception as e:
             last_error = e
             if attempt < max_retries - 1:
                 safe_print(f"Download attempt {attempt + 1} failed. Retrying...")
+                time.sleep(2 ** attempt)
             else:
                 safe_print(f"Failed to download video after {max_retries} attempts.")
                 raise
@@ -370,6 +518,17 @@ def remove_black_bars(frame, threshold=10):
     A row/column is considered a bar only if every pixel in it is darker
     than the threshold. Returns the frame unchanged if it is entirely black.
     """
+    # Fast path. If all four outermost edges already contain something brighter
+    # than the threshold there is no bar on any side, and the full scan below
+    # would return the frame unchanged - so skip it. This matters because
+    # cropping now runs on every frame (scores have to describe the cropped
+    # image), the full scan costs about as much as the quality scoring itself,
+    # and most video has no bars at all. O(W+H) instead of O(W*H*3).
+    edges = frame[:, :, :3]
+    if (edges[0].max() >= threshold and edges[-1].max() >= threshold
+            and edges[:, 0].max() >= threshold and edges[:, -1].max() >= threshold):
+        return frame
+
     black_mask = (frame[:, :, :3] < threshold).all(axis=2)
 
     content_rows = np.where(~black_mask.all(axis=1))[0]
@@ -442,60 +601,65 @@ def apply_filters(frame, gradfun, deblock, deband, verbose, ffmpeg_available=Tru
 def apply_ffmpeg_filter(frame, filter_string, verbose):
     """Run an FFmpeg ``-vf`` filter chain on a single BGR frame.
 
-    Returns the filtered frame, or ``None`` if FFmpeg failed (missing binary,
-    non-zero exit, or unreadable output) so callers can report the failure
-    instead of silently keeping the unfiltered frame.
+    Frames are piped as raw video rather than round-tripped through a PNG on
+    disk: gradfun and deband never change frame dimensions, so rawvideo in
+    and out is lossless and skips an encode/decode cycle per frame. Returns
+    the filtered frame, or ``None`` if FFmpeg failed (missing binary,
+    non-zero exit, or short read) so callers can report the failure instead
+    of silently keeping the unfiltered frame.
     """
-    temp_in_name = None
-    temp_out_name = None
+    height, width = frame.shape[:2]
+    ffmpeg_cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin',
+        '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-video_size', f'{width}x{height}',
+        '-i', 'pipe:0',
+        '-vf', filter_string,
+        '-f', 'rawvideo', '-pix_fmt', 'bgr24', 'pipe:1'
+    ]
     try:
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_in:
-            temp_in_name = temp_in.name
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_out:
-            temp_out_name = temp_out.name
+        result = subprocess.run(ffmpeg_cmd, input=frame.tobytes(), capture_output=True,
+                                creationflags=_get_subprocess_flags())
+    except FileNotFoundError:
+        if verbose:
+            print(f"Error: FFmpeg not found. Command attempted: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
+            print("Please ensure FFmpeg is installed and in your system PATH.")
+        return None
 
-        cv2.imwrite(temp_in_name, frame)
-        ffmpeg_cmd = [
-            'ffmpeg', '-i', temp_in_name, '-vf', filter_string, '-y', temp_out_name
-        ]
-        try:
-            subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True,
-                          creationflags=_get_subprocess_flags())
-            return cv2.imread(temp_out_name)  # None if the output couldn't be read
-        except subprocess.CalledProcessError as e:
-            if verbose:
-                print(f"Error running FFmpeg command: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
-                print(f"Error output: {e.stderr}")
-            return None
-        except FileNotFoundError:
-            if verbose:
-                print(f"Error: FFmpeg not found. Command attempted: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
-                print("Please ensure FFmpeg is installed and in your system PATH.")
-            return None
-    finally:
-        # Clean up temporary files
-        if temp_in_name and os.path.exists(temp_in_name):
-            os.unlink(temp_in_name)
-        if temp_out_name and os.path.exists(temp_out_name):
-            os.unlink(temp_out_name)
+    expected_bytes = width * height * 3
+    if result.returncode != 0 or len(result.stdout) != expected_bytes:
+        if verbose:
+            print(f"Error running FFmpeg command: {' '.join(map(shlex.quote, ffmpeg_cmd))}")
+            print(f"Error output: {result.stderr.decode(errors='replace')}")
+        return None
+    return np.frombuffer(result.stdout, np.uint8).reshape(height, width, 3)
 
 def process_frame(args):
     (frame, output_folder, count, quality_threshold, blur_threshold, detect_watermarks,
      watermark_threshold, use_png, gradfun, deblock, deband, verbose, ffmpeg_available) = args
+
+    # Crop before scoring. Letterbox/pillarbox bars are large flat black regions
+    # that drag down contrast and entropy, so scoring the uncropped frame judged
+    # the bars as much as the picture - and left the filename's scores describing
+    # a frame that was never saved. Watermark detection needs the crop too: its
+    # corner tests are relative to frame.shape, and the real corners of the
+    # picture are the cropped ones.
+    frame = remove_black_bars(frame)
 
     quality_score = calculate_quality_score(frame)
     laplacian_var = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
 
     quality_check = quality_score >= quality_threshold
     blur_check = laplacian_var >= blur_threshold
-    watermark_detected = detect_watermarks and detect_watermark(frame, watermark_threshold)
 
     if quality_check and blur_check:
+        watermark_detected = detect_watermarks and detect_watermark(frame, watermark_threshold)
+
         filters_failed = []
         if gradfun or deblock or deband:
+            # Applied after scoring on purpose: deblock is a denoiser, so it
+            # lowers Laplacian variance by design. Scoring its output would
+            # stamp a "blurrier" number on a frame the filter just improved.
             frame, filters_failed = apply_filters(frame, gradfun, deblock, deband, verbose, ffmpeg_available)
-
-        frame = remove_black_bars(frame)
 
         filename = f"frame_{count:06d}_q{int(quality_score):02d}_b{int(laplacian_var):02d}"
         if watermark_detected:
@@ -550,6 +714,105 @@ def detect_scene_frames(video_path, fast_scene=False, verbose=False):
     return [scene[0].frame_num for scene in scene_list]
 
 
+class _StatusReporter:
+    """Progress output tuned to where it is actually going.
+
+    A terminal gets a tqdm bar. When stdout is a pipe it does not: the GUI runs
+    this script as a subprocess and streams it into a Tk text widget, where a
+    bar built from carriage returns renders as thousands of separate lines. That
+    case gets a periodic one-line summary instead.
+
+    The GUI additionally needs a machine-parsable feed for its determinate
+    progress bar. It sets YSE_PROGRESS=1 in the child's environment; when
+    present, every advance() also emits one @@PROGRESS line, which the GUI
+    parses and strips from the log. Terminal runs never emit them.
+
+    Per-frame lines are verbose-only either way. They used to print
+    unconditionally while the bar was verbose-only, which is backwards - an
+    'all'-method run over a few minutes of video emits tens of thousands of
+    them, burying the summary that follows.
+    """
+
+    def __init__(self, total, initial, verbose, summary_interval=2.0):
+        self.verbose = verbose
+        self.is_tty = bool(getattr(sys.stdout, 'isatty', lambda: False)())
+        self.summary_interval = summary_interval
+        self._last_summary = 0.0
+        # The GUI sets YSE_PROGRESS=1 and parses @@PROGRESS lines into its
+        # determinate bar, stripping them from the log. Terminals never see
+        # them, so human-facing output is unchanged.
+        self._machine_progress = os.environ.get("YSE_PROGRESS") == "1"
+        self._bar = tqdm(total=total, initial=initial, disable=not self.is_tty,
+                         unit="frame")
+
+    @staticmethod
+    def _emit(text):
+        # tqdm.write keeps the bar from being torn apart by interleaved output.
+        try:
+            tqdm.write(text)
+        except UnicodeEncodeError:
+            tqdm.write(text.encode('ascii', 'replace').decode('ascii'))
+
+    def log(self, message):
+        """Report one frame's outcome. Verbose only."""
+        if self.verbose:
+            self._emit(message)
+
+    def advance(self, tracker):
+        self._bar.update(1)
+        if self._machine_progress:
+            self._emit(self.progress_line(tracker))
+        if self.is_tty or self.verbose:
+            return
+        now = time.monotonic()
+        if now - self._last_summary < self.summary_interval:
+            return
+        self._last_summary = now
+        self._emit(self.summary_line(tracker))
+
+    def progress_line(self, tracker):
+        """One machine-parsable snapshot for the GUI's progress bar."""
+        parts = [f"done={tracker.processed}"]
+        if self._bar.total:
+            parts.append(f"total={self._bar.total}")
+        parts.append(f"saved={tracker.saved} skipped={tracker.skipped}")
+        return "@@PROGRESS " + " ".join(parts)
+
+    def summary_line(self, tracker):
+        total = self._bar.total
+        position = f"{tracker.processed}/{total}" if total else str(tracker.processed)
+        return (f"Progress: {position} frames - "
+                f"{tracker.saved} saved, {tracker.skipped} skipped")
+
+    def close(self, tracker=None):
+        self._bar.close()
+        # One final line for the piped case, which never saw the bar.
+        if tracker is not None and not self.is_tty and not self.verbose:
+            self._emit(self.summary_line(tracker))
+
+
+def load_progress(progress_file):
+    """Read a resume checkpoint, returning (processed, skipped, saved).
+
+    The progress file is written by an extraction that may have been killed
+    mid-write, and --resume exists precisely for those runs - so a truncated or
+    unreadable file is an expected input, not an exotic one. Fall back to
+    starting over rather than aborting the run with a traceback.
+    """
+    try:
+        with open(progress_file, "r") as f:
+            progress = json.load(f)
+        return (
+            int(progress.get("processed_frames", 0)),
+            int(progress.get("skipped_frames", 0)),
+            int(progress.get("saved_frames", 0)),
+        )
+    except (json.JSONDecodeError, OSError, TypeError, ValueError, AttributeError) as e:
+        safe_print(f"Warning: could not read {progress_file} ({e}).")
+        safe_print("Starting this extraction from the beginning.")
+        return (0, 0, 0)
+
+
 class _ProgressTracker:
     """Fold out-of-order frame completions into a contiguous prefix.
 
@@ -587,26 +850,68 @@ class _ProgressTracker:
         return self.resume_point
 
 
-def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=12, blur_threshold=10, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
+def extract_frames(video_path, output_folder, method='interval', interval_seconds=5, quality_threshold=30, blur_threshold=50, detect_watermarks=False, watermark_threshold=0.8, use_parallel=True, use_png=False, fast_scene=False, resume=False, verbose=False, gradfun=False, deblock=False, deband=False):
     os.makedirs(output_folder, exist_ok=True)
 
     if method == 'keyframes':
-        output_pattern = os.path.join(output_folder, "keyframe_%03d.jpg")
+        extension = "png" if use_png else "jpg"
+        # %06d rather than %03d: three digits wrap at frame 1000, which then
+        # sorts lexically before keyframe_999. Six digits matches the
+        # frame_%06d naming every other method uses.
+        output_pattern = os.path.join(output_folder, f"keyframe_%06d.{extension}")
+        # abspath, not the raw path. FFmpeg has no "--" end-of-options marker,
+        # so a leading '-' in the name would be read as a flag; argparse
+        # rejects such a source first, so this is belt-and-braces rather than
+        # a live hole, but it also pins the input against any cwd change.
         ffmpeg_command = [
-            "ffmpeg", "-i", video_path,
+            "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", os.path.abspath(video_path),
             "-vf", "select='eq(pict_type,PICT_TYPE_I)'",
             "-fps_mode", "vfr",
             "-q:v", "2",
             output_pattern
         ]
+        # Snapshot the folder so the count below can tell this extraction's
+        # output from leftovers. Each file is compared against its OWN earlier
+        # stat rather than against a wall-clock instant: two runs seconds apart
+        # are indistinguishable by "mtime >= started" once filesystem timestamp
+        # granularity is allowed for.
+        # glob.escape: only the '*' below is a pattern. An output folder whose
+        # name contains '[' or ']' would otherwise be read as a character class
+        # and match nothing, silently reporting zero saved.
+        keyframe_glob = os.path.join(glob.escape(output_folder), f"keyframe_*.{extension}")
+
+        def stat_keyframes():
+            snapshot = {}
+            for path in glob.glob(keyframe_glob):
+                try:
+                    info = os.stat(path)
+                except OSError:
+                    continue
+                snapshot[path] = (info.st_mtime_ns, info.st_size)
+            return snapshot
+
+        before = stat_keyframes()
         try:
+            # -y and -nostdin: without them FFmpeg prompts "Overwrite? [y/N]" when
+            # the output folder already holds keyframes from a previous run and
+            # then blocks forever, because stdout/stderr are captured but stdin is
+            # inherited (and there is no console at all under the GUI).
             subprocess.run(ffmpeg_command, check=True, capture_output=True,
                           creationflags=_get_subprocess_flags())
         except subprocess.CalledProcessError as e:
             print(f"Error during keyframe extraction: {e.stderr.decode() if e.stderr else 'Unknown error'}")
             return 0, 0, 0, set()
-        saved = len(glob.glob(os.path.join(output_folder, "keyframe_*.jpg")))
+        # Count what this run wrote, not what is in the folder. FFmpeg numbers
+        # from 1 every time, so re-using an --output folder overwrites the low
+        # numbers and leaves any higher ones from a longer previous video in
+        # place - counting the folder reported those as saved by this run too.
+        after = stat_keyframes()
+        saved = sum(1 for path, info in after.items() if before.get(path) != info)
+        stale = len(after) - saved
         print("Keyframe extraction complete.")
+        if stale:
+            safe_print(f"Note: {stale} keyframe file(s) already in {output_folder} "
+                       "are from an earlier run and were left untouched.")
         return saved, 0, saved, set()
 
     scene_frame_numbers = None
@@ -640,13 +945,27 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         expected_total = None  # Unknown length (e.g., some streams)
 
     def frame_generator():
-        """Yield (frame, count) one at a time so memory stays bounded."""
+        """Yield (frame, count) one at a time so memory stays bounded.
+
+        ``count`` numbers the frames this generator actually yields, with no
+        gaps. It is not an index into the source: _ProgressTracker only
+        advances across a contiguous run of completed counts, so a skipped
+        number would strand every later frame in its pending map - totals
+        would under-report and --resume would checkpoint at the gap and
+        re-process everything after it.
+        """
         if scene_frame_numbers is not None:
-            for i, frame_number in enumerate(scene_frame_numbers):
+            # Seeks can fail (short or damaged tail, variable frame rate), so
+            # number the frames that actually decode rather than the scene list.
+            count = 0
+            for frame_number in scene_frame_numbers:
                 video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
                 ret, frame = video.read()
                 if ret:
-                    yield frame, i
+                    yield frame, count
+                    count += 1
+                elif verbose:
+                    safe_print(f"Warning: could not read scene frame {frame_number}; skipping it.")
         else:
             # Sequential read with grab() to skip undecoded frames quickly
             frame_number = 0
@@ -670,23 +989,28 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
     ffmpeg_available = check_ffmpeg()  # Checked once; passed to workers instead of per-frame
 
     if resume and os.path.exists(progress_file):
-        with open(progress_file, "r") as f:
-            progress = json.load(f)
-        start_at = progress.get("processed_frames", 0)
-        skipped_frames = progress.get("skipped_frames", 0)
-        saved_frames = progress.get("saved_frames", 0)
-        safe_print(f"Resuming: skipping first {start_at} already-processed frames.")
+        start_at, skipped_frames, saved_frames = load_progress(progress_file)
+        if start_at or skipped_frames or saved_frames:
+            safe_print(f"Resuming: skipping first {start_at} already-processed frames.")
 
     tracker = _ProgressTracker(start_at, saved_frames, skipped_frames)
 
     def save_progress():
-        if resume:
-            with open(progress_file, "w") as f:
+        if not resume:
+            return
+        # Write-then-replace: os.replace is atomic, so an interrupt can never
+        # leave a half-written progress file behind for the next --resume run.
+        tmp_path = progress_file + ".tmp"
+        try:
+            with open(tmp_path, "w") as f:
                 json.dump({
                     "processed_frames": tracker.resume_point,
                     "skipped_frames": tracker.skipped,
                     "saved_frames": tracker.saved,
                 }, f)
+            os.replace(tmp_path, progress_file)
+        except OSError as e:
+            safe_print(f"Warning: could not save resume progress: {e}")
 
     def make_task_args(frame, count):
         return (frame, output_folder, count, quality_threshold, blur_threshold,
@@ -699,16 +1023,18 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                 future_or_result.result() if hasattr(future_or_result, 'result') else future_or_result
             )
         except Exception as e:
+            # Always surfaced: an error is not routine per-frame chatter.
             safe_print(f"Error processing frame {count}: {e}")
             tracker.record(count, False)  # Errored frame counts as done (skipped)
             save_progress()
             return
-        safe_print(result)
+        reporter.log(result)
         tracker.record(count, saved)
         all_filters_failed.update(filters_failed)
         save_progress()
 
-    with tqdm(total=expected_total, initial=start_at, disable=not verbose) as pbar:
+    reporter = _StatusReporter(expected_total, start_at, verbose)
+    try:
         if use_parallel:
             max_in_flight = (os.cpu_count() or 4) * 2
             with ThreadPoolExecutor() as executor:
@@ -724,18 +1050,22 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                         done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                         for future in done:
                             handle_result(future_count.pop(future), future)
-                            pbar.update(1)
+                            reporter.advance(tracker)
                 for future in as_completed(in_flight):
                     handle_result(future_count.pop(future), future)
-                    pbar.update(1)
+                    reporter.advance(tracker)
         else:
             for frame, count in frame_generator():
                 if count < start_at:
                     continue
                 handle_result(count, process_frame(make_task_args(frame, count)))
-                pbar.update(1)
-
-    video.release()
+                reporter.advance(tracker)
+    finally:
+        reporter.close(tracker)
+        # Release the capture on the error path too, or an interrupted run
+        # keeps the video file open until the interpreter exits - which on
+        # Windows blocks the caller from deleting the downloaded file.
+        video.release()
 
     # Extraction finished successfully - remove the progress file so a future
     # --resume run doesn't skip frames of a new extraction.
@@ -765,16 +1095,32 @@ def generate_thumbnail(output_folder):
         indices = [int(i * (total - 1) / 8) for i in range(9)]
         selected_frames = [frames[i] for i in indices]
 
-    images = [Image.open(os.path.join(output_folder, f)) for f in selected_frames]
+    # Saved frames do NOT all share one size: remove_black_bars() crops each
+    # frame to its own content, so letterboxed and pillarboxed frames come out
+    # smaller than the rest. Fit every tile into a common cell instead of
+    # assuming the first frame's size, which otherwise leaves the grid ragged
+    # with black gaps and overlapping pastes.
+    cols = min(3, len(selected_frames))
+    rows = (len(selected_frames) + cols - 1) // cols
 
-    width, height = images[0].size
-    # Calculate grid size based on number of images
-    cols = min(3, len(images))
-    rows = (len(images) + cols - 1) // cols
-    thumbnail = Image.new('RGB', (width * cols, height * rows))
+    # Open each selected frame once: the size pass and the paste pass used to
+    # read every image from disk twice.
+    tiles = []
+    for f in selected_frames:
+        with Image.open(os.path.join(output_folder, f)) as im:
+            tiles.append(im.convert('RGB'))
+    sizes = [t.size for t in tiles]
+    cell_w = max(w for w, _ in sizes)
+    cell_h = max(h for _, h in sizes)
 
-    for i, image in enumerate(images):
-        thumbnail.paste(image, ((i % cols) * width, (i // cols) * height))
+    thumbnail = Image.new('RGB', (cell_w * cols, cell_h * rows), (0, 0, 0))
+
+    for i, tile in enumerate(tiles):
+        # Preserve aspect ratio, then centre the tile inside its cell.
+        tile.thumbnail((cell_w, cell_h), Image.LANCZOS)
+        x = (i % cols) * cell_w + (cell_w - tile.width) // 2
+        y = (i // cols) * cell_h + (cell_h - tile.height) // 2
+        thumbnail.paste(tile, (x, y))
 
     thumbnail.save(os.path.join(output_folder, 'thumbnail_montage.jpg'))
     print(f"Thumbnail montage generated from {len(selected_frames)} frames (of {total} total).")
@@ -793,8 +1139,11 @@ Output Filename Syntax:
   frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)
   where:
     NNNNNN: Frame number (zero-padded to 6 digits)
-    XX: Quality score (0-99, higher is better)
+    XX: Quality score (0-100, higher is better)
     YY: Blur score (higher numbers indicate less blur)
+  Both scores are measured on the frame as cropped, before any optional
+  --gradfun/--deblock/--deband filtering (deblock is a denoiser, so it lowers
+  the blur score by design).
     _watermarked: Suffix added if a watermark is detected (when --detect-watermarks is used)
     jpg|png: File extension based on the chosen format
 
@@ -832,6 +1181,8 @@ YouTube Authentication (for age-restricted, private, or PO Token-required videos
    --extractor-args ARGS: Additional yt-dlp extractor arguments (e.g., 'youtube:player_client=mweb')
 
 Note:
+- Per-frame lines are printed only with --verbose. Without it you get a progress
+  bar in a terminal, or a periodic one-line summary when output is piped.
 - Using filters may significantly increase processing time.
 - Choose between gradfun and deband based on your needs:
    - Use gradfun for subtle banding issues or to preserve more detail.
@@ -844,10 +1195,10 @@ Note:
                         help="Frame extraction method (default: interval)")
     parser.add_argument("--interval", type=float, default=5.0,
                         help="Interval between frames in seconds (default: 5.0, only used with 'interval' method)")
-    parser.add_argument("--quality", type=float, default=12.0,
-                        help="Quality threshold for frame selection (0-100, default: 12.0)")
-    parser.add_argument("--blur", type=float, default=10.0,
-                        help="Blur threshold for frame selection (default: 10.0)")
+    parser.add_argument("--quality", type=float, default=30.0,
+                        help="Quality threshold for frame selection (0-100, higher is stricter, default: 30.0)")
+    parser.add_argument("--blur", type=float, default=50.0,
+                        help="Blur threshold for frame selection (higher allows less blur, default: 50.0)")
     parser.add_argument("--detect-watermarks", action="store_true",
                         help="Enable basic watermark detection")
     parser.add_argument("--watermark-threshold", type=float, default=0.8,
@@ -894,10 +1245,12 @@ Note:
     args = parser.parse_args()
 
     if args.config:
-        with open(args.config, 'r') as f:
-            config = json.load(f)
-        parser.set_defaults(**config)
+        # Re-parse so explicit command-line flags still win over the file.
+        config_appends = apply_config_file(parser, args.config)
         args = parser.parse_args()
+        for dest, value in config_appends.items():
+            if getattr(args, dest) is None:  # nothing given on the command line
+                setattr(args, dest, value)
 
     if args.quality < 0 or args.quality > 100:
         parser.error("Quality threshold must be between 0 and 100.")
@@ -942,7 +1295,7 @@ Note:
         # Clean URL - remove playlist params that cause wrong video extraction
         cleaned_url = clean_youtube_url(args.source)
         if cleaned_url != args.source:
-            safe_print(f"Note: Stripped playlist parameters from URL")
+            safe_print("Note: Stripped playlist parameters from URL")
             safe_print(f"  Original: {args.source}")
             safe_print(f"  Cleaned:  {cleaned_url}")
 
@@ -960,13 +1313,20 @@ Note:
             if duration:
                 safe_print(f"Duration: {int(duration // 60)}m {int(duration % 60)}s")
         else:
-            video_title = download_video(
-                cleaned_url, video_path, args.max_resolution, args.verbose,
-                cookies_from_browser=args.cookies_from_browser,
-                cookies_file=args.cookies,
-                sleep_requests=args.sleep_requests,
-                extractor_args=extractor_args_dict
-            )
+            try:
+                video_title = download_video(
+                    cleaned_url, video_path, args.max_resolution, args.verbose,
+                    cookies_from_browser=args.cookies_from_browser,
+                    cookies_file=args.cookies,
+                    sleep_requests=args.sleep_requests,
+                    extractor_args=extractor_args_dict
+                )
+            except BaseException:
+                # A failed download leaves the half-written target plus
+                # yt-dlp's .part bookkeeping behind; clean them up instead of
+                # accumulating multi-hundred-MB orphans across failed runs.
+                remove_partial_download(video_path)
+                raise
         sanitized_title = sanitize_filename(video_title)
     else:
         # It's a local file
@@ -1018,22 +1378,29 @@ Note:
 
     if not args.dry_run:
         start_time = time.time()
-        total_frames, skipped_frames, saved_frames, filters_failed = extract_frames(
-            video_path, output_folder, args.method, args.interval, args.quality,
-            args.blur, args.detect_watermarks, args.watermark_threshold,
-            not args.disable_parallel, args.png, args.fast_scene,
-            args.resume, args.verbose, args.gradfun, args.deblock, args.deband
-        )
+        try:
+            total_frames, skipped_frames, saved_frames, filters_failed = extract_frames(
+                video_path, output_folder, args.method, args.interval, args.quality,
+                args.blur, args.detect_watermarks, args.watermark_threshold,
+                not args.disable_parallel, args.png, args.fast_scene,
+                args.resume, args.verbose, args.gradfun, args.deblock, args.deband
+            )
+        except BaseException:
+            # Same reasoning as the download path above: an aborted extraction
+            # should not leave our downloaded video behind either.
+            if is_url and not args.keep_video:
+                remove_partial_download(video_path)
+            raise
         end_time = time.time()
 
         execution_time = end_time - start_time
         frames_per_second = total_frames / execution_time if execution_time > 0 else 0
 
-        print(f"\nFrame extraction complete.")
+        print("\nFrame extraction complete.")
         print(f"Total execution time: {execution_time:.2f} seconds")
         print(f"Processed {total_frames} frames.")
-        print(f"{saved_frames} high-quality frames saved!")
-        print(f"{skipped_frames} frames skipped due to low-quality and/or blur.")
+        print(f"{saved_frames} high-quality frame{'s' if saved_frames != 1 else ''} saved!")
+        print(f"{skipped_frames} frame{'s' if skipped_frames != 1 else ''} skipped due to low-quality and/or blur.")
         print(f"Processing speed: {frames_per_second:.2f} frames/second")
 
         # Add information about post-processing filters

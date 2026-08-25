@@ -1,0 +1,18 @@
+# Line endings are functional here, not cosmetic.
+#
+# start.sh is the macOS/Linux launcher: committed with CRLF it dies at the
+# shebang ("bad interpreter: No such file or directory"), and shellcheck in
+# CI would not catch it. START.bat is the Windows one, where some cmd.exe
+# constructs need CRLF. Nothing enforced this before - the files happened to
+# be stored correctly, and any contributor with a different core.autocrlf
+# could have flipped either one.
+* text=auto
+
+*.sh text eol=lf
+*.bat text eol=crlf
+
+# Binary assets: never touch these.
+*.png binary
+*.jpg binary
+*.ico binary
+*.mp4 binary

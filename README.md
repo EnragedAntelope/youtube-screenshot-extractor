@@ -27,7 +27,7 @@ Double-click **`START.bat`**. First time, run in order:
 - **[4] Install Deno** — required for YouTube downloads
 - **[5] Install FFmpeg** — required for keyframe extraction and some filters
 
-Then use **[1] Launch GUI** to start. **[2] Check for Updates** pulls the latest tool code and updates yt-dlp in one step — run it anytime, especially if it's been a while (option [6] shows CLI help).
+Then use **[1] Launch GUI** to start. **[2] Check for Updates** pulls the latest tool code and refreshes yt-dlp and the other dependencies in one step — run it anytime, especially if it's been a while (option [6] shows CLI help).
 
 ### macOS / Linux
 Run **`./start.sh`** — same menu, same steps.
@@ -56,6 +56,15 @@ pip install -r requirements.txt
 ```
 Then install Deno and FFmpeg as shown above.
 
+### Running the tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests -v
+```
+
+The unit tests cover the pure helpers (URL cleaning, extractor-arg parsing, black-bar cropping, resume bookkeeping, montage tiling, yt-dlp option building) and need neither Deno nor FFmpeg. `tests/test_gui.py` additionally builds the real Tk widget tree; it skips itself where tkinter cannot open a display.
+
 ## Usage
 
 ### GUI (recommended)
@@ -64,7 +73,7 @@ Then install Deno and FFmpeg as shown above.
 python youtube-screenshot-gui.py
 ```
 
-Every option is exposed with a tooltip, sensible defaults are pre-selected, and a live output log shows progress. The **YouTube Authentication** section also carries an advanced *Extractor Args* field (e.g. `youtube:player_client=mweb`) for the rare cases where yt-dlp needs a specific client.
+Every option is exposed with a tooltip, sensible defaults are pre-selected, and a live output log shows progress. A **Stop** button cancels a running extraction, and only one extraction runs at a time. The **YouTube Authentication** section also carries an advanced *Extractor Args* field (e.g. `youtube:player_client=mweb`) for the rare cases where yt-dlp needs a specific client.
 
 ### Command line
 
@@ -91,8 +100,8 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 |--------|-------------|---------|
 | `--method` | `interval`, `all`, `keyframes`, or `scene` | interval |
 | `--interval` | Seconds between frames (interval method only) | 5.0 |
-| `--quality` | Quality threshold 0-100 (higher = stricter) | 12.0 |
-| `--blur` | Blur threshold (higher = less blur allowed) | 10.0 |
+| `--quality` | Quality threshold 0-100 (higher = stricter) | 30.0 |
+| `--blur` | Blur threshold (higher = less blur allowed) | 50.0 |
 | `--max-resolution` | Limit download quality (e.g., 720, 1080) | best |
 | `--output` | Custom output folder name | auto |
 | `--png` | Save as PNG instead of JPG | JPG |
@@ -102,10 +111,10 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 | `--resume` | Resume an interrupted extraction | off |
 | `--thumbnail` | Generate a 3x3 thumbnail montage | off |
 | `--keep-video` | Keep the downloaded source video (deleted after extraction by default) | off |
-| `--verbose` | Detailed logging | off |
+| `--verbose` | Log every frame individually (otherwise a progress bar / periodic summary) | off |
 | `--dry-run` | Preview without downloading or processing | off |
 | `--disable-parallel` | Process frames one at a time | off |
-| `--config` | Load settings from a JSON file | none |
+| `--config` | Load settings from a JSON file (keys match the option names; command-line flags still win) | none |
 | `--gradfun` | Reduce color banding (subtle) | off |
 | `--deblock` | Reduce compression artifacts | off |
 | `--deband` | Reduce color banding (aggressive) | off |
@@ -118,17 +127,25 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 
 Frames are saved as `frame_NNNNNN_qXX_bYY[_watermarked].(jpg|png)`:
 - `NNNNNN` — frame number
-- `XX` — quality score (0-99, higher is better)
+- `XX` — quality score (0-100, higher is better)
 - `YY` — blur score (higher = sharper)
 - `_watermarked` — present if a watermark was detected
+
+Both scores describe the frame **as cropped**, so they match the image on disk. They are measured before any optional `--gradfun`/`--deblock`/`--deband` filtering, because `--deblock` is a denoiser and lowers the blur score by design.
+
+### Progress output
+
+By default a terminal gets a progress bar, and piped output (including the GUI's log) gets a one-line summary every couple of seconds. Pass `--verbose` for a line per frame with its scores and skip reason — useful when tuning thresholds, but an `--method all` run over a few minutes of video emits tens of thousands of them.
+
+The GUI additionally shows a live progress bar with frame counts in the status bar; it is fed by machine-readable progress lines the GUI requests from the script, which never appear in the log itself.
 
 ## Tips
 
 - **Speed**: `keyframes` is fastest, `scene` finds natural cuts, `interval`/`all` can be slow on long videos.
-- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, or post-processing filters — those only apply to the other methods.
-- **Default method**: the CLI defaults to `interval`; the GUI defaults to `scene` (a better starting point for most videos).
-- **Downloaded videos are deleted after extraction** by default. Pass `--keep-video` to retain the source file.
-- **Quality tuning**: start with `--quality 30 --blur 50` and adjust from there.
+- **Keyframe mode extracts every I-frame directly via FFmpeg** and does *not* apply the quality/blur thresholds, watermark detection, post-processing filters, or `--resume` — those only apply to the other methods. Output is JPEG, or PNG with `--png`. The GUI greys those controls out while Keyframes is selected, so it is clear they are not in play.
+- **Default method**: the CLI defaults to `interval`; the GUI defaults to `scene` (a better starting point for most videos). Quality and blur thresholds are the same in both.
+- **Downloaded videos are deleted after extraction** by default — and cleaned up if the download fails midway. Pass `--keep-video` (or tick *Keep video* in the GUI) to retain the source file.
+- **Quality tuning**: the defaults (`--quality 30 --blur 50`) are a middle ground shared by the CLI and GUI. Raise toward `50`/`100` to be pickier, lower toward `12`/`10` to keep almost everything. Run with `--verbose` to see each frame's scores while tuning.
 - **Long videos**: use `--resume` and cap resolution with `--max-resolution 1080`.
 - **Filters**: `--gradfun` for subtle banding, `--deband` for severe banding — both add processing time.
 - **Other sites**: most of yt-dlp's 1000+ supported sites work out of the box; some may not support every resolution option.
@@ -160,11 +177,12 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5 --max-resolution 72
 | Age-restricted video fails | `--cookies-from-browser firefox`, logged into YouTube in that browser |
 | Rate limited / "content isn't available" | `--sleep-requests 5 --max-resolution 720` |
 | "Format not available" | Remove `--max-resolution`, or try a different source |
-| No frames extracted | Lower thresholds: `--quality 20 --blur 30` |
+| No frames extracted | Lower thresholds: `--quality 20 --blur 30`, and add `--verbose` to see each frame's scores |
 | Keyframe extraction fails | Install FFmpeg and make sure it's on PATH |
 | Scene detection slow/crashes | Use `--fast-scene`, or process shorter segments |
 | False watermark positives | Raise `--watermark-threshold` to 0.9 |
 | Process dies on large videos | Use `--resume`, check available disk space |
+| Downloads ignore `--max-resolution` | Install FFmpeg — without it only single-stream formats are available, which limits the choice |
 
 ## License
 

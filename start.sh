@@ -3,6 +3,14 @@
 # YouTube Screenshot Extractor - Setup and Launch Script
 # For macOS and Linux
 
+# Every path below (venv, requirements.txt, the Python scripts, the git
+# checkout) is relative, so the script only works from the repo root. Move
+# there rather than depending on the caller's working directory.
+cd "$(dirname "${BASH_SOURCE[0]}")" || {
+    echo "ERROR: could not change to the script's directory." >&2
+    exit 1
+}
+
 # Colors for terminal output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -25,7 +33,7 @@ detect_os() {
 print_message() {
     local color=$1
     shift
-    echo -e "${color}$@${NC}"
+    echo -e "${color}$*${NC}"
 }
 
 # Print header
@@ -187,15 +195,21 @@ update() {
         print_message "$YELLOW" "  Skipping yt-dlp update: run Initial Setup - option 3 - first."
     else
         source venv/bin/activate
-        print_message "$GREEN" "  Checking for yt-dlp updates..."
+        print_message "$GREEN" "  Checking for dependency updates..."
         echo ""
+        # --upgrade on requirements.txt too, not just yt-dlp: pip leaves an
+        # already-installed package alone when it still satisfies the floor, so
+        # security bumps in requirements.txt never reach existing installs
+        # otherwise.
         if command -v uv &> /dev/null; then
+            uv pip install --upgrade -r requirements.txt
             uv pip install --upgrade "yt-dlp[default]"
         else
+            pip install --upgrade -r requirements.txt
             pip install --upgrade "yt-dlp[default]"
         fi
         echo ""
-        print_message "$GREEN" "  yt-dlp is up to date."
+        print_message "$GREEN" "  Dependencies are up to date."
     fi
     echo ""
 
