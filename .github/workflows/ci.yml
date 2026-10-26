@@ -74,7 +74,7 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -104,11 +104,10 @@ jobs:
                   print(f"{m.group(1)}=={m.group(2)}")
           EOF
           cat floors.txt
-          # --no-deps: audit exactly these pins with no environment resolution.
-          # Without it pip-audit resolves the floors against the runner's Python,
-          # and an older floor may predate that version's wheels (numpy 2.0.0 has
-          # no cp313 wheel, so it would try to compile numpy from source).
-          pip-audit --no-deps -r floors.txt --progress-spinner off
+          # --no-deps --disable-pip: look these exact pins up without installing
+          # them. Installing took minutes and fails on an old floor with no wheel
+          # for the runner's Python (it tries to compile from source).
+          pip-audit --no-deps --disable-pip -r floors.txt --progress-spinner off
 
   shellcheck:
     if: github.event_name != 'schedule'
