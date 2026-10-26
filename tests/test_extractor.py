@@ -246,6 +246,37 @@ class TestGenerateThumbnail:
         with Image.open(tmp_path / "thumbnail_montage.jpg") as im:
             assert im.size == (20, 20)
 
+    def test_leaves_out_an_earlier_runs_frames(self, tmp_path):
+        """A re-used --output folder still holds the last run's frames; only
+        the ones this run wrote belong in its montage."""
+        Image.fromarray(np.full((80, 80, 3), 50, np.uint8)).save(tmp_path / "frame_000000_q50_b50.png")
+        earlier = yse.file_stats(str(p) for p in tmp_path.iterdir())
+        Image.fromarray(np.full((20, 20, 3), 200, np.uint8)).save(tmp_path / "frame_000001_q50_b50.png")
+        yse.generate_thumbnail(str(tmp_path), earlier)
+        with Image.open(tmp_path / "thumbnail_montage.jpg") as im:
+            assert im.size == (20, 20)
+
+
+class TestResumeNeedsOutput:
+    """The default output folder is timestamped, so --resume without --output
+    would look for its checkpoint in a brand-new folder and start over."""
+
+    def _main(self, monkeypatch, argv):
+        monkeypatch.setattr(sys, "argv", ["youtube-screenshot-script.py", *argv])
+        yse.main()
+
+    def test_rejected_without_output(self, monkeypatch, capsys):
+        with pytest.raises(SystemExit):
+            self._main(monkeypatch, ["video.mp4", "--resume"])
+        assert "--resume needs --output" in capsys.readouterr().err
+
+    def test_keyframes_is_exempt(self, monkeypatch, capsys):
+        # keyframes ignores --resume, so it must not trip this check. The run
+        # then stops later on the missing file (or missing FFmpeg).
+        with pytest.raises(SystemExit):
+            self._main(monkeypatch, ["missing.mp4", "--resume", "--method", "keyframes"])
+        assert "--resume needs --output" not in capsys.readouterr().err
+
 
 class TestBuildYdlOpts:
     def test_cookies_from_browser_is_a_tuple(self):

@@ -14,6 +14,9 @@ on:
 
 jobs:
   test:
+    # The weekly schedule exists for the dependency audit only; unchanged code
+    # does not need re-testing on a timer.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # Without a cap a stalled step runs to GitHub's 6-hour default: an
     # apt-get mirror hang on this workflow did exactly that. The suite
@@ -22,8 +25,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 is the documented minimum; 3.13 is the current default.
-        python-version: ["3.10", "3.13"]
+        # 3.11 is the documented minimum (Pillow 13 needs it); 3.13 is the current default.
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v5
 
@@ -108,6 +111,7 @@ jobs:
           pip-audit --no-deps -r floors.txt --progress-spinner off
 
   shellcheck:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
