@@ -638,6 +638,14 @@ class YouTubeScreenshotGUI:
         if self.thumbnail_var.get():
             cmd.append("--thumbnail")
         if pipeline and self.resume_var.get():
+            # The default folder is timestamped, so a resume without one would
+            # look in a fresh folder and silently start over.
+            if not output:
+                messagebox.showerror(
+                    "Output folder needed",
+                    "Resume needs an Output folder: choose the folder the "
+                    "interrupted run wrote to.")
+                return None
             cmd.append("--resume")
         if self.keep_video_var.get():
             cmd.append("--keep-video")

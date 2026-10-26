@@ -105,7 +105,7 @@ initial_setup() {
     # Check if Python is available
     if ! command -v python3 &> /dev/null; then
         print_message "$RED" "  ERROR: Python 3 is not installed."
-        echo "  Please install Python 3.10+ from:"
+        echo "  Please install Python 3.11+ from:"
         if [[ "$OS" == "macos" ]]; then
             echo "    - https://python.org OR"
             echo "    - brew install python3"

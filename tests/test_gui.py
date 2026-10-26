@@ -177,6 +177,18 @@ class TestNumericEntryValidation:
         assert app._build_command() is None
         assert self.errors
 
+    def test_resume_without_output_folder_is_rejected(self, app):
+        # The default folder is timestamped, so the rerun could never find
+        # its checkpoint.
+        _select(app, "interval")
+        app.source_var.set("video.mp4")
+        app.resume_var.set(True)
+        app.output_var.set("")
+        assert app._build_command() is None
+        assert self.errors and "Output" in self.errors[0]
+        app.output_var.set("shots")
+        assert "--resume" in app._build_command()
+
     def test_valid_interval_builds_a_command(self, app):
         _select(app, "interval")
         self._type_into(app, app.interval_frame, "2.5")

@@ -73,6 +73,19 @@ def remove_partial_download(video_path):
             safe_print(f"Note: Could not remove partial download {leftover}: {e}")
 
 
+def file_stats(paths):
+    """Map each path to (mtime_ns, size), so a later snapshot can tell which
+    files a run wrote or overwrote. Paths that vanish mid-scan are skipped."""
+    snapshot = {}
+    for path in paths:
+        try:
+            info = os.stat(path)
+        except OSError:
+            continue
+        snapshot[path] = (info.st_mtime_ns, info.st_size)
+    return snapshot
+
+
 def clean_youtube_url(url):
     """Extract just the video ID from YouTube URLs, stripping playlist and other params.
 
@@ -881,14 +894,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
         keyframe_glob = os.path.join(glob.escape(output_folder), f"keyframe_*.{extension}")
 
         def stat_keyframes():
-            snapshot = {}
-            for path in glob.glob(keyframe_glob):
-                try:
-                    info = os.stat(path)
-                except OSError:
-                    continue
-                snapshot[path] = (info.st_mtime_ns, info.st_size)
-            return snapshot
+            return file_stats(glob.glob(keyframe_glob))
 
         before = stat_keyframes()
         try:
@@ -1074,10 +1080,21 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
 
     return tracker.processed, tracker.skipped, tracker.saved, all_filters_failed
 
-def generate_thumbnail(output_folder):
+def generate_thumbnail(output_folder, earlier=None):
+    """Build a 3x3 montage of the frames in output_folder.
+
+    earlier: a file_stats() snapshot taken before the run. Files it lists
+    unchanged are left out, so a re-used --output folder does not mix an
+    earlier run's frames into this run's montage.
+    """
+    earlier = earlier or {}
     frames = [f for f in os.listdir(output_folder) if f.endswith('.jpg') or f.endswith('.png')]
     # Exclude the montage itself if regenerating
     frames = [f for f in frames if not f.startswith('thumbnail_montage')]
+    if earlier:
+        current = file_stats(os.path.join(output_folder, f) for f in frames)
+        frames = [f for f in frames
+                  if earlier.get(os.path.join(output_folder, f)) != current.get(os.path.join(output_folder, f))]
     if not frames:
         print("No frames found to generate thumbnail.")
         return
@@ -1117,7 +1134,7 @@ def generate_thumbnail(output_folder):
 
     for i, tile in enumerate(tiles):
         # Preserve aspect ratio, then centre the tile inside its cell.
-        tile.thumbnail((cell_w, cell_h), Image.LANCZOS)
+        tile.thumbnail((cell_w, cell_h), Image.Resampling.LANCZOS)
         x = (i % cols) * cell_w + (cell_w - tile.width) // 2
         y = (i // cols) * cell_h + (cell_h - tile.height) // 2
         thumbnail.paste(tile, (x, y))
@@ -1264,6 +1281,12 @@ Note:
     if args.interval <= 0:
         parser.error("Interval must be greater than 0.")
 
+    # The default output folder is timestamped, so a rerun would look for its
+    # checkpoint in a brand-new folder and silently start over.
+    if args.resume and not args.output and args.method != 'keyframes':
+        parser.error("--resume needs --output: name the folder the interrupted run "
+                     "wrote to, so the rerun can find its progress file.")
+
     if args.cookies and not os.path.isfile(args.cookies):
         parser.error(f"Cookies file not found: {args.cookies}")
 
@@ -1377,6 +1400,11 @@ Note:
         print(f"Extractor arguments: {'; '.join(args.extractor_args)}")
 
     if not args.dry_run:
+        # A resumed run's earlier frames belong to this extraction, so only a
+        # fresh run excludes what was already in the folder from the montage.
+        earlier_files = {}
+        if args.thumbnail and not args.resume and os.path.isdir(output_folder):
+            earlier_files = file_stats(glob.glob(os.path.join(glob.escape(output_folder), "*")))
         start_time = time.time()
         try:
             total_frames, skipped_frames, saved_frames, filters_failed = extract_frames(
@@ -1425,7 +1453,7 @@ Note:
                 print("Or use the startup script option 4 to install it.")
 
         if args.thumbnail:
-            generate_thumbnail(output_folder)
+            generate_thumbnail(output_folder, earlier_files)
 
         # Remove the downloaded source video (URL inputs only) so runs don't
         # leave full-size files behind. Never touch a user's local file.

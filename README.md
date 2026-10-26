@@ -34,7 +34,7 @@ Run **`./start.sh`** — same menu, same steps.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - [Deno](https://deno.land/) — **required for YouTube** (other sites don't need it)
   - `winget install DenoLand.Deno` (Windows) / `brew install deno` (macOS) / `curl -fsSL https://deno.land/install.sh | sh` (Linux)
 - [FFmpeg](https://ffmpeg.org/download.html) — **required for keyframe extraction, gradfun/deband filters, and merging separate audio/video streams**
@@ -108,7 +108,7 @@ python youtube-screenshot-script.py "URL" --sleep-requests 5
 | `--detect-watermarks` | Enable watermark detection | off |
 | `--watermark-threshold` | Watermark sensitivity 0-1 | 0.8 |
 | `--fast-scene` | Faster but less accurate scene detection | off |
-| `--resume` | Resume an interrupted extraction | off |
+| `--resume` | Resume an interrupted extraction. Needs `--output`, so the rerun finds the same folder | off |
 | `--thumbnail` | Generate a 3x3 thumbnail montage | off |
 | `--keep-video` | Keep the downloaded source video (deleted after extraction by default) | off |
 | `--verbose` | Log every frame individually (otherwise a progress bar / periodic summary) | off |
