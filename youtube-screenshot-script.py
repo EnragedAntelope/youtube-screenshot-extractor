@@ -497,17 +497,27 @@ def download_video(url, output_path, max_resolution=None, verbose=False, cookies
         raise last_error
 
 def calculate_quality_score(image):
+    return quality_metrics(image)[0]
+
+
+def quality_metrics(image):
+    """Return (quality score 0-100, Laplacian variance) for a BGR frame.
+
+    One pass: the blur check uses the same Laplacian variance the score is
+    built from, so computing them together saves a grayscale conversion and a
+    Laplacian per frame.
+    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     # Sharpness using Laplacian variance
     laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    sharpness = np.var(laplacian)
+    sharpness = laplacian.var()
     sharpness_norm = min(max(sharpness / 1000, 0), 1.0)
 
     # Edge strength using Sobel
     sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    edge_strength = np.mean(np.sqrt(sobelx**2 + sobely**2))
+    edge_strength = np.mean(cv2.magnitude(sobelx, sobely))
     edge_strength_norm = min(max(edge_strength / 100, 0), 1.0)
 
     # Contrast and Brightness
@@ -523,7 +533,7 @@ def calculate_quality_score(image):
 
     # Calculate weighted score
     score = (sharpness_norm * 0.3 + edge_strength_norm * 0.2 + contrast_norm * 0.2 + brightness * 0.1 + entropy_norm * 0.2) * 100
-    return max(min(score, 100), 0)  # Ensure the score is between 0 and 100
+    return max(min(score, 100), 0), sharpness  # score clamped to 0-100
 
 def remove_black_bars(frame, threshold=10):
     """Crop black letterbox/pillarbox bars from a BGR frame.
@@ -658,8 +668,7 @@ def process_frame(args):
     # picture are the cropped ones.
     frame = remove_black_bars(frame)
 
-    quality_score = calculate_quality_score(frame)
-    laplacian_var = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
+    quality_score, laplacian_var = quality_metrics(frame)
 
     quality_check = quality_score >= quality_threshold
     blur_check = laplacian_var >= blur_threshold
@@ -680,7 +689,15 @@ def process_frame(args):
         filename += ".png" if use_png else ".jpg"
 
         frame_filename = os.path.join(output_folder, filename)
-        cv2.imwrite(frame_filename, frame)
+        # Not cv2.imwrite: on Windows it cannot open a non-ASCII path and only
+        # returns False, so a video with an accented or CJK title (which the
+        # default folder name keeps) reported every frame saved into an empty
+        # folder. Encode in memory and let Python write the file; any failure
+        # now raises and the frame is reported as an error, not as saved.
+        ok, encoded = cv2.imencode(os.path.splitext(filename)[1], frame)
+        if not ok:
+            raise ValueError(f"could not encode {filename}")
+        encoded.tofile(frame_filename)
 
         status = f"Saved frame {frame_filename}"
         if watermark_detected:
@@ -905,7 +922,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
             subprocess.run(ffmpeg_command, check=True, capture_output=True,
                           creationflags=_get_subprocess_flags())
         except subprocess.CalledProcessError as e:
-            print(f"Error during keyframe extraction: {e.stderr.decode() if e.stderr else 'Unknown error'}")
+            print(f"Error during keyframe extraction: {e.stderr.decode(errors='replace') if e.stderr else 'Unknown error'}")
             return 0, 0, 0, set()
         # Count what this run wrote, not what is in the folder. FFmpeg numbers
         # from 1 every time, so re-using an --output folder overwrites the low
@@ -1000,10 +1017,19 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
             safe_print(f"Resuming: skipping first {start_at} already-processed frames.")
 
     tracker = _ProgressTracker(start_at, saved_frames, skipped_frames)
+    last_saved_at = 0.0
 
-    def save_progress():
+    def save_progress(force=False):
+        # At most once a second: this runs on the thread that decodes frames,
+        # and a file write per frame slowed long 'all' runs. An interrupt
+        # costs at most a second of re-processing (same frames, same names).
+        nonlocal last_saved_at
         if not resume:
             return
+        now = time.monotonic()
+        if not force and now - last_saved_at < 1.0:
+            return
+        last_saved_at = now
         # Write-then-replace: os.replace is atomic, so an interrupt can never
         # leave a half-written progress file behind for the next --resume run.
         tmp_path = progress_file + ".tmp"
@@ -1067,6 +1093,7 @@ def extract_frames(video_path, output_folder, method='interval', interval_second
                 handle_result(count, process_frame(make_task_args(frame, count)))
                 reporter.advance(tracker)
     finally:
+        save_progress(force=True)  # an interrupted run checkpoints where it stopped
         reporter.close(tracker)
         # Release the capture on the error path too, or an interrupted run
         # keeps the video file open until the interpreter exits - which on
@@ -1143,6 +1170,13 @@ def generate_thumbnail(output_folder, earlier=None):
     print(f"Thumbnail montage generated from {len(selected_frames)} frames (of {total} total).")
 
 def main():
+    # Piped stdout (the GUI, or a user's redirect) uses the locale encoding on
+    # Windows, and printing a non-ASCII title or path there raised
+    # UnicodeEncodeError and killed the run. Degrade the character instead.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
     if not check_ffmpeg():
         print("Warning: FFmpeg is not installed. Some features may be limited.")
         print("For full functionality, please install FFmpeg:")

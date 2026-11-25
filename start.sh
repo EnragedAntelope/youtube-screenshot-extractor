@@ -95,6 +95,21 @@ show_menu() {
     esac
 }
 
+# Report and return 0 when the given Python is older than 3.11 (Pillow 13
+# needs 3.11+). Also run on the venv: one made before that minimum survives
+# on old installs even after PATH's Python is upgraded.
+python_too_old() {
+    if "$1" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+        return 1
+    fi
+    print_message "$RED" "  ERROR: This tool needs Python 3.11 or newer."
+    echo "  Install it, delete the venv folder here if there is one, then run"
+    echo "  Initial Setup - option 3 - again."
+    echo ""
+    read -p "Press Enter to continue..."
+    return 0
+}
+
 # Initial setup
 initial_setup() {
     print_header
@@ -123,6 +138,7 @@ initial_setup() {
     PYVER=$(python3 --version 2>&1 | awk '{print $2}')
     print_message "$GREEN" "  Found Python $PYVER"
     echo ""
+    python_too_old python3 && return
 
     # Check if venv already exists
     if [ -d "venv" ]; then
@@ -147,6 +163,7 @@ initial_setup() {
 
     print_message "$GREEN" "  Activating virtual environment..."
     source venv/bin/activate
+    python_too_old python && return
 
     print_message "$GREEN" "  Installing uv for faster package management..."
     pip install -q uv 2>/dev/null || true
@@ -190,26 +207,29 @@ update() {
 
     LAUNCHER_CHANGED=0
 
-    # --- Update yt-dlp first (needs the virtual environment) ---
+    # --- Update dependencies first (needs the virtual environment) ---
     if [ ! -d "venv" ]; then
-        print_message "$YELLOW" "  Skipping yt-dlp update: run Initial Setup - option 3 - first."
+        print_message "$YELLOW" "  Skipping dependency update: run Initial Setup - option 3 - first."
     else
         source venv/bin/activate
+        python_too_old python && return
         print_message "$GREEN" "  Checking for dependency updates..."
         echo ""
-        # --upgrade on requirements.txt too, not just yt-dlp: pip leaves an
-        # already-installed package alone when it still satisfies the floor, so
-        # security bumps in requirements.txt never reach existing installs
-        # otherwise.
+        # --upgrade, because pip leaves an already-installed package alone when
+        # it still satisfies the floor, so security bumps in requirements.txt
+        # would never reach existing installs. It also upgrades yt-dlp.
         if command -v uv &> /dev/null; then
             uv pip install --upgrade -r requirements.txt
-            uv pip install --upgrade "yt-dlp[default]"
         else
             pip install --upgrade -r requirements.txt
-            pip install --upgrade "yt-dlp[default]"
         fi
+        status=$?
         echo ""
-        print_message "$GREEN" "  Dependencies are up to date."
+        if [ $status -eq 0 ]; then
+            print_message "$GREEN" "  Dependencies are up to date."
+        else
+            print_message "$RED" "  WARNING: Some dependencies could not be updated - see the messages above."
+        fi
     fi
     echo ""
 
@@ -457,6 +477,21 @@ launch_gui() {
     fi
 
     source venv/bin/activate
+
+    # The GUI runs in the background, so a missing tkinter would fail unseen.
+    # Linux distros and Homebrew ship it as a separate package.
+    if ! python3 -c 'import tkinter' 2>/dev/null; then
+        print_message "$RED" "  ERROR: This Python has no tkinter, so the GUI cannot start."
+        if [[ "$OS" == "macos" ]]; then
+            echo "  Install it with: brew install python-tk"
+        else
+            echo "  Install it with: sudo apt install python3-tk (Debian/Ubuntu)"
+            echo "                   sudo dnf install python3-tkinter (Fedora)"
+        fi
+        echo ""
+        read -p "Press Enter to continue..."
+        return
+    fi
 
     # Launch GUI (python3 works on both macOS and Linux)
     python3 youtube-screenshot-gui.py &

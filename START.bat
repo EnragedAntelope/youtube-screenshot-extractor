@@ -87,6 +87,8 @@ REM Check Python version
 for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PYVER=%%v
 echo  Found Python %PYVER%
 echo.
+python -c "import sys; sys.exit(sys.version_info < (3, 11))" >nul 2>&1
+if errorlevel 1 goto python_too_old
 
 REM Check if venv already exists
 if exist "venv" (
@@ -114,6 +116,9 @@ echo.
 :install_deps
 echo  Activating virtual environment...
 call venv\Scripts\activate.bat
+REM An existing venv may predate the 3.11 minimum even when PATH's Python does not.
+python -c "import sys; sys.exit(sys.version_info < (3, 11))" >nul 2>&1
+if errorlevel 1 goto python_too_old
 
 echo  Installing uv for faster package management...
 pip install uv >nul 2>&1
@@ -157,22 +162,30 @@ echo.
 
 set "LAUNCHER_CHANGED="
 
-REM --- Update yt-dlp first (needs the virtual environment) ---
+REM --- Update dependencies first (needs the virtual environment) ---
 if not exist "venv" (
-    echo  Skipping yt-dlp update: run Initial Setup - option 3 - first.
-) else (
-    call venv\Scripts\activate.bat
-    echo  Checking for dependency updates...
-    echo.
-    REM --upgrade on requirements.txt too, not just yt-dlp: pip leaves an
-    REM already-installed package alone when it still satisfies the floor, so
-    REM security bumps in requirements.txt never reach existing installs
-    REM otherwise.
-    uv pip install --upgrade -r requirements.txt 2>nul || pip install --upgrade -r requirements.txt
-    uv pip install --upgrade "yt-dlp[default]" 2>nul || pip install --upgrade "yt-dlp[default]"
-    echo.
-    echo  Dependencies are up to date.
+    echo  Skipping dependency update: run Initial Setup - option 3 - first.
+    goto update_code
 )
+call venv\Scripts\activate.bat
+python -c "import sys; sys.exit(sys.version_info < (3, 11))" >nul 2>&1
+if errorlevel 1 goto python_too_old
+echo  Checking for dependency updates...
+echo.
+REM --upgrade, because pip leaves an already-installed package alone when it
+REM still satisfies the floor, so security bumps in requirements.txt would
+REM never reach existing installs. It also upgrades yt-dlp to the newest.
+uv pip install --upgrade -r requirements.txt 2>nul || pip install --upgrade -r requirements.txt
+if errorlevel 1 goto update_deps_failed
+echo.
+echo  Dependencies are up to date.
+goto update_code
+
+:update_deps_failed
+echo.
+echo  WARNING: Some dependencies could not be updated - see the messages above.
+
+:update_code
 echo.
 
 REM --- Update the tool's own code via git (kept last so the launcher is
@@ -398,6 +411,9 @@ if not exist "venv" (
 )
 
 call venv\Scripts\activate.bat
+REM pythonw has no console, so a missing tkinter would fail with no message at all.
+python -c "import tkinter" >nul 2>&1
+if errorlevel 1 goto no_tkinter
 start "" venv\Scripts\pythonw.exe youtube-screenshot-gui.py
 echo  GUI launched in a new window.
 echo.
@@ -438,6 +454,23 @@ echo     python youtube-screenshot-script.py "URL" --cookies-from-browser firefo
 echo.
 echo   Avoid rate limiting (add delay between requests):
 echo     python youtube-screenshot-script.py "URL" --sleep-requests 5
+echo.
+pause
+goto menu
+
+:python_too_old
+echo.
+echo  ERROR: This tool needs Python 3.11 or newer.
+echo  Install it from https://python.org, delete the "venv" folder here if
+echo  there is one, then run Initial Setup - option 3 - again.
+echo.
+pause
+goto menu
+
+:no_tkinter
+echo.
+echo  ERROR: This Python install has no tkinter, so the GUI cannot start.
+echo  Re-run the Python installer, choose Modify, and tick "tcl/tk and IDLE".
 echo.
 pause
 goto menu

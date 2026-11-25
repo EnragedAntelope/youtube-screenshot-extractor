@@ -25,12 +25,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is the documented minimum (Pillow 13 needs it); 3.13 is the current default.
-        python-version: ["3.11", "3.13"]
+        # 3.11 is the documented minimum (Pillow 13 needs it); 3.14 is the newest release.
+        python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -72,12 +72,32 @@ jobs:
           python youtube-screenshot-script.py sample.mp4 --method keyframes --png --output ci-keyframes-png
           test -n "$(ls ci-out)" && test -n "$(ls ci-keyframes)" && test -n "$(ls ci-keyframes-png)"
 
+  test-windows:
+    # Most users run the Windows launcher, and Windows-only failures (OpenCV
+    # unable to write a non-ASCII path, a cp1252 pipe crashing on a CJK title)
+    # passed the Linux job unseen. No FFmpeg here: its tests skip themselves.
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Unit tests
+        run: python -m pytest tests -v
+
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Install pip-audit
@@ -114,7 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: ShellCheck the launcher
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck

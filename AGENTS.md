@@ -6,11 +6,11 @@ Pull clean, high-quality still frames from videos — YouTube, 1000+ other sites
 
 ## Current state
 
-_Last verified: 2026-10-26_
+_Last verified: 2026-11-25_
 
 - **Status:** working and maintained, no version number and no release tags — `git log` is the only version record. The recent history is a run of audits fixing silently-broken options rather than new features.
 - **Works:** all four extraction methods (interval, every frame, keyframes, scene detection); automatic blur/quality filtering, black-bar cropping and watermark flagging; YouTube authentication via browser cookies plus request-rate throttling; resume for large extractions; parallel worker-pool processing that streams frames instead of loading the whole video; GUI and CLI at parity.
-- **In progress:** nothing. Latest change: Python 3.10 dropped so the Pillow floor could move to 13.0.0 (the weekly audit flagged CVEs in 12.3.0), `--resume` now requires `--output` in CLI and GUI, and `--thumbnail` leaves out frames an earlier run left in a re-used folder. Before that, three audit rounds: dependency/security floors plus the first test suite and CI; a robustness/parity pass (Stop kills the whole process tree, failed downloads clean up their partial files, `--png` honored by keyframes, FFmpeg filter frames piped instead of temp-filed, GUI blur range matched to the CLI); then a correctness pass (scene-frame numbering, GUI keyframes gating, typed-entry validation, CI job timeouts and xvfb GUI coverage).
+- **In progress:** nothing. Latest change (2026-11 audit): frames are written with `cv2.imencode` + a Python file write, because `cv2.imwrite` silently wrote nothing into non-ASCII folders on Windows (any video with an accented/CJK title) while counting every frame saved; the CLI no longer crashes printing a non-ASCII path to a pipe, and the GUI reads its output as UTF-8; quality and blur come from one pass; resume checkpoints at most once a second (plus on interrupt); launchers check for Python 3.11+ (including an old venv) and for tkinter, and report a failed dependency update; dependency floors and CI actions bumped, CI tests 3.11/3.14 and gained a Windows job. Before that: Python 3.10 dropped so the Pillow floor could move to 13.0.0 (the weekly audit flagged CVEs in 12.3.0), `--resume` now requires `--output` in CLI and GUI, and `--thumbnail` leaves out frames an earlier run left in a re-used folder. Before that, three audit rounds: dependency/security floors plus the first test suite and CI; a robustness/parity pass (Stop kills the whole process tree, failed downloads clean up their partial files, `--png` honored by keyframes, FFmpeg filter frames piped instead of temp-filed, GUI blur range matched to the CLI); then a correctness pass (scene-frame numbering, GUI keyframes gating, typed-entry validation, CI job timeouts and xvfb GUI coverage).
 - **Known gaps / next steps:** tests cover the pure helpers, `process_frame`, and the GUI's behaviour against a real Tk tree (`tests/`, run with `pytest`; CI runs them under xvfb) — **downloading is still verified only by hand**, since nothing in CI touches the network; **YouTube extraction is inherently fragile** — yt-dlp must be kept current (launcher option 2, or `pip install --upgrade "yt-dlp[default]"`), and the working client selection changes over time; Deno is required for YouTube and FFmpeg for keyframes, so a partial install silently limits which methods work; the rate-limit and client-selection notes in *Conventions & gotchas* are the most perishable content in this file — re-verify them before trusting them.
 - **Deep docs:** none — `README.md` is the user-facing reference. Earlier implementation notes on PO tokens and authentication live only in the git history.
 
@@ -36,7 +36,7 @@ _Last verified: 2026-10-26_
 | `requirements.txt` | Python dependencies (yt-dlp, etc.) |
 | `requirements-dev.txt` | Test/lint dependencies (pytest, pyflakes) |
 | `tests/` | `test_extractor.py` (CLI helpers, static GUI/CLI parity scans), `test_gui.py` (real Tk widget tree) |
-| `.github/workflows/ci.yml` | Lint, byte-compile, unit tests, CLI smoke run, dependency audit, shellcheck |
+| `.github/workflows/ci.yml` | Lint, byte-compile, unit tests (Linux 3.11/3.14 + Windows), CLI smoke run, dependency audit, shellcheck |
 | `assets/` | Screenshots and documentation images |
 
 ## Build / test / run
@@ -81,7 +81,10 @@ python youtube-screenshot-script.py --help
 - **Keep yt-dlp updated** — YouTube changes frequently. Use startup script option 2, or `pip install --upgrade "yt-dlp[default]"`.
 - **YouTube authentication:** browser cookies are the only viable method (OAuth deprecated). Use a throwaway account to avoid restrictions.
 - **Rate limiting:** guest sessions ~300 videos/hour, authenticated ~2000 videos/hour. Use `--sleep-requests 5` to stay under limits.
-- **Client selection:** `mweb` client is currently most reliable for YouTube (`--extractor-args "youtube:player_client=mweb"`).
+- **Client selection:** leave it to yt-dlp. Its defaults pick clients that need no PO Token; the yt-dlp wiki suggests `mweb` only *with* a PO Token when the defaults fail (`--extractor-args "youtube:player_client=mweb"` is the syntax). Re-checked against the wiki 2026-11-25.
+- **Never `cv2.imwrite` (or `cv2.imread`) a user path.** On Windows they cannot open non-ASCII paths and fail by return value only. Encode with `cv2.imencode` and write the bytes from Python. `VideoCapture` and scenedetect handle such paths fine (checked 2026-11).
+- **Child process I/O is UTF-8.** The GUI sets `PYTHONIOENCODING=utf-8` and decodes the pipe as UTF-8; the CLI sets `errors="replace"` on stdout/stderr so a stray encoder never kills a run. A plain `print` of a title or path is therefore safe.
+- **`--only-binary opencv-python` in requirements.txt is load-bearing.** opencv-python 5.1's macOS wheels need macOS 15; without the line pip and uv pick its source tarball on older macOS and try to compile. It is also why the opencv floor stays low.
 - **Parallel processing:** long videos stream through worker pool instead of loading into RAM (prevents OOM).
 - **Quality filters:** blur detection and quality scoring run automatically; frames failing either threshold are skipped, not saved. Only the `_watermarked` suffix is ever added (when --detect-watermarks is used). Thresholds default to 30/50 in **both** the CLI and the GUI — keep them in step.
 - **Frame pipeline order matters:** crop black bars -> score -> threshold -> filter -> save. Scoring before the crop lets letterbox bars drag the score down and makes the filename describe a frame that was never written; scoring after the filters stamps a denoised frame with a worse blur number than it earned.
@@ -92,7 +95,7 @@ python youtube-screenshot-script.py --help
 - **Frame counts must have no gaps.** `_ProgressTracker` only advances across a contiguous run of completed indices, so the count `frame_generator` yields numbers the frames it actually produced, never their position in the source. A skipped number strands every later frame in the pending map: totals under-report and `--resume` checkpoints at the gap.
 - **GUI numeric entries are typeable.** Spinbox-backed `DoubleVar`/`IntVar` raise `TclError` on `get()` when the box holds text, and an escaped exception in a button callback has nowhere to print under pythonw — the button just looks dead. Read them through `_read_number`.
 - **CI jobs carry `timeout-minutes`.** GitHub's default is six hours, and a hung `apt-get` step once burned all of it.
-- **The weekly CI schedule runs only the `audit` job.** New advisories land without any push, which is the point of the timer; `test` and `shellcheck` skip `schedule` events. A Monday failure with no recent commits usually means a dependency floor needs raising.
+- **The weekly CI schedule runs only the `audit` job.** New advisories land without any push, which is the point of the timer; `test`, `test-windows` and `shellcheck` skip `schedule` events. A Monday failure with no recent commits usually means a dependency floor needs raising.
 - **`--resume` requires `--output`.** The default folder name is timestamped, so without a fixed folder the rerun can never find `progress.json`.
 
 ## Security
