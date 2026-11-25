@@ -1,15 +1,19 @@
 # Floors are security-relevant: pip will NOT upgrade an already-installed
 # package that still satisfies the floor, so raising these is what actually
 # moves existing checkouts off vulnerable versions.
-yt-dlp[default]>=2026.10.21
-# Upper bound guards against an untested major-version jump (4.x -> 5.x happened
-# silently under the previous unbounded '>=4.10.0'). 5.x is tested and works.
-# The floor is the real release number - there is no opencv-python 4.10.0.
+yt-dlp[default]>=2026.11.23
+# Wheels only: the newest opencv-python's macOS wheels need macOS 15, and
+# without this pip and uv pick its source tarball on older macOS and try to
+# compile OpenCV. With it they fall back to the newest wheel that fits.
+# The floor stays low for the same reason - raising it drops older macOS.
+--only-binary opencv-python
+# Upper bound guards against an untested major-version jump. 5.x is tested.
 opencv-python>=4.10.0.84,<6.0.0
-numpy>=2.0.0,<3.0.0
+# 2.4.x is the last numpy line that supports Python 3.11; newer Pythons
+# resolve past it on their own.
+numpy>=2.4.6,<3.0.0
 # 13.0.0 clears the CVEs found against 12.3.0 in October 2026. It needs
 # Python 3.11+, which is why 3.10 support was dropped.
 Pillow>=13.0.0
-scenedetect>=0.6.4,<0.8
-# 4.67.1 clears PYSEC-2026-1976 present in the previous 4.66.0 floor.
-tqdm>=4.67.1
+scenedetect>=0.7.3,<0.8
+tqdm>=4.70.1

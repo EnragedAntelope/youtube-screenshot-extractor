@@ -927,3 +927,72 @@ class TestKeyframeCounts:
         _, _, saved = self._extract(clip, out)
         assert saved == len(list(out.glob("keyframe_*.jpg")))
         assert saved > 0
+
+
+class TestNonAsciiPaths:
+    """Video titles keep their non-ASCII letters in the default folder name.
+    cv2.imwrite cannot open such a path on Windows and only returns False, so
+    every frame was counted as saved while the folder stayed empty."""
+
+    @pytest.mark.parametrize("use_png", [False, True])
+    def test_frame_lands_in_a_non_ascii_folder(self, tmp_path, use_png):
+        out = tmp_path / "screenshots_\u65e5\u672c\u8a9e_Jos\u00e9"
+        out.mkdir()
+        rng = np.random.default_rng(6)
+        frame = rng.integers(0, 255, (48, 64, 3), dtype=np.uint8)
+        _, saved, _ = yse.process_frame(
+            (frame, str(out), 0, 0.0, 0.0, False, 0.8, use_png,
+             False, False, False, False, False)
+        )
+        written = list(out.iterdir())
+        assert saved and len(written) == 1
+        assert written[0].suffix == (".png" if use_png else ".jpg")
+        with Image.open(written[0]) as im:
+            assert im.size == (64, 48)
+
+    def test_piped_output_survives_a_non_ascii_path(self, tmp_path):
+        # PYTHONIOENCODING=ascii makes any platform behave like a Windows pipe
+        # (cp1252) does for these characters: a strict encoder that raises.
+        env = dict(os.environ, PYTHONIOENCODING="ascii")
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "youtube-screenshot-script.py"),
+             str(tmp_path / "missing_\u65e5\u672c\u8a9e.mp4")],
+            capture_output=True, env=env, timeout=120,
+        )
+        output = (result.stdout + result.stderr).decode("ascii", errors="replace")
+        assert "Video file not found" in output
+        assert "UnicodeEncodeError" not in output
+
+
+class TestQualityMetrics:
+    def test_blur_value_is_the_laplacian_variance(self):
+        rng = np.random.default_rng(7)
+        frame = rng.integers(0, 255, (40, 50, 3), dtype=np.uint8)
+        score, blur = yse.quality_metrics(frame)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        assert blur == pytest.approx(cv2.Laplacian(gray, cv2.CV_64F).var())
+        assert score == yse.calculate_quality_score(frame)
+
+
+class TestResumeCheckpoint:
+    """Progress is written at most once a second, so an interrupted run must
+    still checkpoint where it actually stopped, not at the last timed write."""
+
+    def test_interrupt_checkpoints_the_frames_done(self, tmp_path, monkeypatch):
+        video = tmp_path / "clip.mp4"
+        TestSceneExtractionCounts._write_video(video, frames=10)
+        real = yse.process_frame
+
+        def stop_at_three(args):
+            if args[2] == 3:
+                raise KeyboardInterrupt
+            return real(args)
+
+        monkeypatch.setattr(yse, "process_frame", stop_at_three)
+        out = tmp_path / "out"
+        with pytest.raises(KeyboardInterrupt):
+            yse.extract_frames(str(video), str(out), method="all", quality_threshold=0,
+                               blur_threshold=0, use_parallel=False, resume=True)
+        progress = json.loads((out / "progress.json").read_text())
+        assert progress["processed_frames"] == 3
+        assert progress["saved_frames"] == 3

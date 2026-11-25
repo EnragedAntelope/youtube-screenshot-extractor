@@ -160,6 +160,8 @@ python youtube-screenshot-script.py "URL" --cookies-from-browser firefox
 
 You need to be logged into YouTube in that browser (Firefox is recommended on Windows — Chrome encrypts its cookies). Age-restricted and private videos always require this.
 
+If browser cookies stop working, yt-dlp's own advice is a cookies file: log into YouTube in a private/incognito window, export that window's cookies with a cookies.txt browser extension, close the window, and pass the file with `--cookies FILE` (or the GUI's *Cookies File* field). YouTube rotates cookies in open tabs, so keep that window the only one with YouTube open while exporting.
+
 To stay well under rate limits when processing multiple videos, add a delay and cap resolution:
 
 ```bash

@@ -702,13 +702,16 @@ class YouTubeScreenshotGUI:
                 # Create process with unbuffered output
                 env = os.environ.copy()
                 env['PYTHONUNBUFFERED'] = '1'
+                # A pipe otherwise gets the Windows locale encoding (cp1252),
+                # which turns a CJK video title into '???' in the log.
+                env['PYTHONIOENCODING'] = 'utf-8'
                 # Ask the CLI for @@PROGRESS machine lines (parsed and stripped
                 # by the reader thread) to drive the determinate progress bar.
                 env['YSE_PROGRESS'] = '1'
 
                 process = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, cwd=script_dir, env=env,
+                    encoding='utf-8', errors='replace', cwd=script_dir, env=env,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                     bufsize=1  # Line buffered
                 )
